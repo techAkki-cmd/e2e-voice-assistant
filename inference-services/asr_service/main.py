@@ -11,7 +11,7 @@ RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
 
 AUDIO_INCOMING_QUEUE = "audio.incoming.raw"
 TEXT_LLM_QUEUE = "text.llm.processing"
-UTTERANCE_CHUNK_TARGET = int(os.getenv("ASR_UTTERANCE_CHUNKS", "1"))
+UTTERANCE_CHUNK_TARGET = int(os.getenv("ASR_UTTERANCE_CHUNKS", "8"))
 
 
 def rabbitmq_url() -> str:

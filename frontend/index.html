@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JarvisLabs Voice Pipeline Observatory</title>
+  <link rel="icon" href="data:," />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
+            mono: ["JetBrains Mono", "SFMono-Regular", "Consolas", "monospace"],
+          },
+          boxShadow: {
+            glow: "0 0 40px rgba(34, 211, 238, 0.22)",
+            emerald: "0 0 34px rgba(16, 185, 129, 0.25)",
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 12% 15%, rgba(34, 211, 238, 0.10), transparent 28%),
+        radial-gradient(circle at 86% 18%, rgba(16, 185, 129, 0.08), transparent 28%),
+        radial-gradient(circle at 50% 100%, rgba(245, 158, 11, 0.08), transparent 32%),
+        #05070b;
+    }
+
+    .glass {
+      background: linear-gradient(145deg, rgba(15, 23, 42, 0.88), rgba(2, 6, 23, 0.82));
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      box-shadow: 0 18px 80px rgba(0, 0, 0, 0.40);
+      backdrop-filter: blur(18px);
+    }
+
+    .panel-grid {
+      background-image:
+        linear-gradient(rgba(148, 163, 184, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(148, 163, 184, 0.055) 1px, transparent 1px);
+      background-size: 28px 28px;
+    }
+
+    .mic-pulse {
+      animation: micPulse 1.65s ease-in-out infinite;
+    }
+
+    @keyframes micPulse {
+      0%, 100% {
+        transform: scale(1);
+        box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.40), 0 0 38px rgba(34, 211, 238, 0.22);
+      }
+      50% {
+        transform: scale(1.045);
+        box-shadow: 0 0 0 18px rgba(34, 211, 238, 0), 0 0 54px rgba(16, 185, 129, 0.32);
+      }
+    }
+
+    .scanline {
+      position: relative;
+      overflow: hidden;
+    }
+
+    .scanline::after {
+      content: "";
+      pointer-events: none;
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to bottom, transparent, rgba(34, 211, 238, 0.08), transparent);
+      height: 110px;
+      transform: translateY(-120px);
+      animation: scan 5.5s linear infinite;
+    }
+
+    @keyframes scan {
+      to { transform: translateY(620px); }
+    }
+
+    #networkLog::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    #networkLog::-webkit-scrollbar-track {
+      background: rgba(15, 23, 42, 0.7);
+    }
+
+    #networkLog::-webkit-scrollbar-thumb {
+      background: rgba(51, 65, 85, 0.9);
+      border-radius: 999px;
+    }
+  </style>
+</head>
+<body class="h-screen overflow-hidden text-slate-100 antialiased">
+  <main class="mx-auto flex h-screen max-h-screen w-full max-w-[1500px] flex-col gap-5 overflow-hidden px-5 py-5 lg:px-7">
+    <header class="glass shrink-0 flex flex-col justify-between gap-4 rounded-lg px-5 py-4 md:flex-row md:items-center">
+      <div>
+        <div class="flex items-center gap-3">
+          <div class="flex h-10 w-10 items-center justify-center rounded-md border border-cyan-400/25 bg-cyan-400/10 text-cyan-300">
+            <i data-lucide="activity" class="h-5 w-5"></i>
+          </div>
+          <div>
+            <h1 class="text-xl font-semibold tracking-normal text-white md:text-2xl">Developer Observability Dashboard</h1>
+            <p class="mt-1 text-sm text-slate-400">Real-time voice loop telemetry for WebSocket, AMQP, ASR, LLM, and TTS paths</p>
+          </div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+        <span class="inline-flex items-center gap-2 rounded-md border border-slate-700/80 bg-slate-950/60 px-3 py-2">
+          <i data-lucide="radio" class="h-4 w-4 text-emerald-300"></i>
+          ws://localhost:8080/api/v1/audio/stream
+        </span>
+        <span id="headerState" class="inline-flex items-center gap-2 rounded-md border border-slate-700/80 bg-slate-950/60 px-3 py-2">
+          <span class="h-2 w-2 rounded-full bg-slate-500"></span>
+          Disconnected
+        </span>
+      </div>
+    </header>
+
+    <section class="grid min-h-0 flex-1 gap-5 overflow-hidden lg:grid-cols-[1.05fr_0.95fr]">
+      <section class="glass panel-grid flex min-h-0 items-center justify-center overflow-hidden rounded-lg p-5">
+        <div class="w-full max-w-xl rounded-lg border border-slate-700/70 bg-slate-950/80 p-6 shadow-glow">
+          <div class="mb-6 flex items-start justify-between gap-4">
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300">Voice Interface</p>
+              <h2 class="mt-2 text-2xl font-semibold text-white">Live Audio Stream</h2>
+            </div>
+            <span id="stateBadge" class="inline-flex shrink-0 items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300">
+              <span id="stateDot" class="h-2 w-2 rounded-full bg-slate-500"></span>
+              <span id="stateText">Disconnected</span>
+            </span>
+          </div>
+
+          <div class="flex flex-col items-center">
+            <button
+              id="micButton"
+              type="button"
+              aria-label="Start voice session"
+              class="group relative flex h-36 w-36 items-center justify-center rounded-full border border-cyan-300/25 bg-gradient-to-br from-slate-800 via-slate-950 to-cyan-950 text-cyan-200 shadow-glow transition hover:border-cyan-300/60 hover:text-white focus:outline-none focus:ring-4 focus:ring-cyan-400/20"
+            >
+              <span class="absolute inset-4 rounded-full border border-white/10"></span>
+              <i id="micIcon" data-lucide="mic" class="relative h-14 w-14"></i>
+            </button>
+
+            <p id="actionHint" class="mt-5 text-sm text-slate-400">Click to connect and start streaming microphone audio.</p>
+            <p id="errorText" class="mt-3 hidden max-w-md text-center text-sm font-medium text-red-300"></p>
+          </div>
+
+          <div class="mt-8 rounded-lg border border-slate-800 bg-black/50 p-3 scanline">
+            <div class="mb-3 flex items-center justify-between px-1">
+              <span class="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
+                <i data-lucide="waves" class="h-4 w-4 text-cyan-300"></i>
+                Oscilloscope
+              </span>
+              <span id="visualizerMode" class="text-xs text-slate-500">idle</span>
+            </div>
+            <canvas id="waveCanvas" width="900" height="280" class="h-56 w-full rounded-md bg-slate-950"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="glass flex min-h-0 flex-col overflow-hidden rounded-lg p-5">
+        <div class="mb-5 flex shrink-0 items-center justify-between gap-4">
+          <div>
+            <p class="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">Network Observability</p>
+            <h2 class="mt-2 text-2xl font-semibold text-white">Live Metrics</h2>
+          </div>
+          <div class="rounded-md border border-emerald-400/20 bg-emerald-400/10 p-2 text-emerald-300">
+            <i data-lucide="server-cog" class="h-5 w-5"></i>
+          </div>
+        </div>
+
+        <div class="grid shrink-0 gap-3 sm:grid-cols-2">
+          <article class="rounded-lg border border-slate-800 bg-slate-950/75 p-4">
+            <div class="flex items-center justify-between text-slate-400">
+              <span class="text-xs font-medium uppercase tracking-[0.16em]">Round-Trip Latency</span>
+              <i data-lucide="timer" class="h-4 w-4 text-cyan-300"></i>
+            </div>
+            <p id="latencyMetric" class="mt-4 text-3xl font-semibold text-white">--</p>
+            <p class="mt-1 text-xs text-slate-500">milliseconds</p>
+          </article>
+
+          <article class="rounded-lg border border-slate-800 bg-slate-950/75 p-4">
+            <div class="flex items-center justify-between text-slate-400">
+              <span class="text-xs font-medium uppercase tracking-[0.16em]">Time to First Byte</span>
+              <i data-lucide="zap" class="h-4 w-4 text-amber-300"></i>
+            </div>
+            <p id="ttfbMetric" class="mt-4 text-3xl font-semibold text-white">--</p>
+            <p class="mt-1 text-xs text-slate-500">milliseconds</p>
+          </article>
+
+          <article class="rounded-lg border border-slate-800 bg-slate-950/75 p-4">
+            <div class="flex items-center justify-between text-slate-400">
+              <span class="text-xs font-medium uppercase tracking-[0.16em]">Bytes Sent</span>
+              <i data-lucide="upload" class="h-4 w-4 text-emerald-300"></i>
+            </div>
+            <p id="bytesSentMetric" class="mt-4 text-3xl font-semibold text-white">0</p>
+            <p class="mt-1 text-xs text-slate-500">browser to orchestrator</p>
+          </article>
+
+          <article class="rounded-lg border border-slate-800 bg-slate-950/75 p-4">
+            <div class="flex items-center justify-between text-slate-400">
+              <span class="text-xs font-medium uppercase tracking-[0.16em]">Bytes Received</span>
+              <i data-lucide="download" class="h-4 w-4 text-cyan-300"></i>
+            </div>
+            <p id="bytesReceivedMetric" class="mt-4 text-3xl font-semibold text-white">0</p>
+            <p class="mt-1 text-xs text-slate-500">orchestrator to browser</p>
+          </article>
+        </div>
+
+        <div class="mt-5 flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-800 bg-black/70">
+          <div class="flex shrink-0 items-center justify-between border-b border-slate-800 px-4 py-3">
+            <span class="inline-flex items-center gap-2 text-sm font-medium text-slate-300">
+              <i data-lucide="terminal" class="h-4 w-4 text-emerald-300"></i>
+              Network Log Terminal
+            </span>
+            <button id="clearLogButton" type="button" class="rounded-md border border-slate-800 px-3 py-1.5 text-xs text-slate-400 transition hover:border-slate-600 hover:text-white">
+              Clear
+            </button>
+          </div>
+          <pre id="networkLog" class="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-slate-300"></pre>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script>
+    const WS_URL = "ws://localhost:8080/api/v1/audio/stream";
+    const CHUNK_TIMESLICE_MS = 250;
+
+    const elements = {
+      micButton: document.getElementById("micButton"),
+      micIcon: document.getElementById("micIcon"),
+      stateBadge: document.getElementById("stateBadge"),
+      stateDot: document.getElementById("stateDot"),
+      stateText: document.getElementById("stateText"),
+      headerState: document.getElementById("headerState"),
+      actionHint: document.getElementById("actionHint"),
+      errorText: document.getElementById("errorText"),
+      canvas: document.getElementById("waveCanvas"),
+      visualizerMode: document.getElementById("visualizerMode"),
+      latencyMetric: document.getElementById("latencyMetric"),
+      ttfbMetric: document.getElementById("ttfbMetric"),
+      bytesSentMetric: document.getElementById("bytesSentMetric"),
+      bytesReceivedMetric: document.getElementById("bytesReceivedMetric"),
+      networkLog: document.getElementById("networkLog"),
+      clearLogButton: document.getElementById("clearLogButton"),
+    };
+
+    const ctx = elements.canvas.getContext("2d");
+
+    const app = {
+      state: "Disconnected",
+      socket: null,
+      mediaStream: null,
+      mediaRecorder: null,
+      audioContext: null,
+      micSource: null,
+      micAnalyser: null,
+      playbackAnalyser: null,
+      activeAnalyser: null,
+      animationFrameId: null,
+      bytesSent: 0,
+      bytesReceived: 0,
+      lastSentAt: null,
+      sessionStartedAt: null,
+      firstByteReceived: false,
+      visualSpikeUntil: 0,
+      mockFallbackSeen: false,
+      lastMockFallbackLogAt: 0,
+      stopping: false,
+    };
+
+    const stateStyles = {
+      Disconnected: {
+        dot: "bg-slate-500",
+        badge: "border-slate-700 bg-slate-900 text-slate-300",
+        hint: "Click to connect and start streaming microphone audio.",
+        icon: "mic",
+      },
+      Connecting: {
+        dot: "bg-amber-300",
+        badge: "border-amber-400/30 bg-amber-400/10 text-amber-200",
+        hint: "Negotiating microphone and WebSocket access...",
+        icon: "loader-2",
+      },
+      Listening: {
+        dot: "bg-emerald-300",
+        badge: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
+        hint: "Streaming microphone chunks every 250ms.",
+        icon: "mic",
+      },
+      "Playing Audio": {
+        dot: "bg-cyan-300",
+        badge: "border-cyan-400/30 bg-cyan-400/10 text-cyan-200",
+        hint: "Receiving and playing assistant audio.",
+        icon: "volume-2",
+      },
+      Error: {
+        dot: "bg-red-400",
+        badge: "border-red-400/30 bg-red-400/10 text-red-200",
+        hint: "Resolve the error and click to retry.",
+        icon: "triangle-alert",
+      },
+    };
+
+    function formatBytes(value) {
+      return new Intl.NumberFormat("en-US").format(value);
+    }
+
+    function formatMs(value) {
+      if (!Number.isFinite(value)) return "--";
+      return Math.max(0, value).toFixed(1);
+    }
+
+    function timestamp() {
+      return new Date().toLocaleTimeString("en-US", { hour12: false });
+    }
+
+    function log(message, tone = "info") {
+      const palette = {
+        info: "text-slate-300",
+        ok: "text-emerald-300",
+        warn: "text-amber-300",
+        error: "text-red-300",
+        rx: "text-cyan-300",
+        tx: "text-violet-300",
+      };
+      const line = `[${timestamp()}] ${message}`;
+      const span = document.createElement("span");
+      span.className = palette[tone] || palette.info;
+      span.textContent = line + "\n";
+      elements.networkLog.appendChild(span);
+      elements.networkLog.scrollTop = elements.networkLog.scrollHeight;
+    }
+
+    function setState(nextState, errorReason = "") {
+      app.state = nextState;
+      const style = stateStyles[nextState];
+
+      elements.stateText.textContent = nextState;
+      elements.stateDot.className = `h-2 w-2 rounded-full ${style.dot}`;
+      elements.stateBadge.className = `inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${style.badge}`;
+      elements.headerState.innerHTML = `<span class="h-2 w-2 rounded-full ${style.dot}"></span>${nextState}`;
+      elements.actionHint.textContent = style.hint;
+      elements.micButton.classList.toggle("mic-pulse", nextState === "Listening");
+      elements.micButton.setAttribute("aria-label", nextState === "Disconnected" || nextState === "Error" ? "Start voice session" : "Stop voice session");
+
+      elements.micIcon.setAttribute("data-lucide", style.icon);
+      lucide.createIcons();
+
+      if (errorReason) {
+        elements.errorText.textContent = errorReason;
+        elements.errorText.classList.remove("hidden");
+      } else if (nextState !== "Error") {
+        elements.errorText.textContent = "";
+        elements.errorText.classList.add("hidden");
+      }
+    }
+
+    function resetMetrics() {
+      app.bytesSent = 0;
+      app.bytesReceived = 0;
+      app.lastSentAt = null;
+      app.sessionStartedAt = performance.now();
+      app.firstByteReceived = false;
+      app.mockFallbackSeen = false;
+      app.lastMockFallbackLogAt = 0;
+      elements.latencyMetric.textContent = "--";
+      elements.ttfbMetric.textContent = "--";
+      elements.bytesSentMetric.textContent = "0";
+      elements.bytesReceivedMetric.textContent = "0";
+    }
+
+    function updateByteMetrics() {
+      elements.bytesSentMetric.textContent = formatBytes(app.bytesSent);
+      elements.bytesReceivedMetric.textContent = formatBytes(app.bytesReceived);
+    }
+
+    function ensureAudioContext() {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error("Web Audio API is not supported in this browser.");
+      }
+
+      if (!app.audioContext || app.audioContext.state === "closed") {
+        app.audioContext = new AudioContextClass();
+      }
+
+      if (app.audioContext.state === "suspended") {
+        return app.audioContext.resume().then(() => app.audioContext);
+      }
+
+      return Promise.resolve(app.audioContext);
+    }
+
+    function createAnalyser() {
+      const analyser = app.audioContext.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.72;
+      return analyser;
+    }
+
+    function startVisualizer() {
+      cancelAnimationFrame(app.animationFrameId);
+      const width = elements.canvas.width;
+      const height = elements.canvas.height;
+      const data = new Uint8Array(2048);
+
+      function draw() {
+        app.animationFrameId = requestAnimationFrame(draw);
+
+        ctx.clearRect(0, 0, width, height);
+        const gradient = ctx.createLinearGradient(0, 0, width, height);
+        gradient.addColorStop(0, "rgba(15, 23, 42, 0.96)");
+        gradient.addColorStop(1, "rgba(2, 6, 23, 0.98)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+
+        ctx.strokeStyle = "rgba(51, 65, 85, 0.55)";
+        ctx.lineWidth = 1;
+        for (let y = 40; y < height; y += 40) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(width, y);
+          ctx.stroke();
+        }
+
+        const analyser = app.activeAnalyser;
+        const now = performance.now();
+        const syntheticSpike = now < app.visualSpikeUntil;
+
+        ctx.beginPath();
+        ctx.lineWidth = 3;
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = syntheticSpike ? "rgba(245, 158, 11, 0.75)" : "rgba(34, 211, 238, 0.75)";
+        ctx.strokeStyle = syntheticSpike ? "rgb(251, 191, 36)" : "rgb(34, 211, 238)";
+
+        if (analyser) {
+          analyser.getByteTimeDomainData(data);
+          const slice = width / data.length;
+          for (let i = 0; i < data.length; i++) {
+            const x = i * slice;
+            const y = (data[i] / 255) * height;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+        } else {
+          for (let x = 0; x <= width; x += 6) {
+            const y = height / 2 + Math.sin((x + now * 0.06) * 0.025) * (syntheticSpike ? 42 : 5);
+            if (x === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+        }
+
+        if (syntheticSpike && !analyser) {
+          ctx.lineTo(width, height / 2);
+        }
+
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+
+      draw();
+    }
+
+    function stopVisualizer() {
+      cancelAnimationFrame(app.animationFrameId);
+      app.animationFrameId = null;
+      app.activeAnalyser = null;
+      elements.visualizerMode.textContent = "idle";
+      app.visualSpikeUntil = performance.now() + 350;
+      startVisualizer();
+    }
+
+    function connectWebSocket() {
+      return new Promise((resolve, reject) => {
+        const socket = new WebSocket(WS_URL);
+        app.socket = socket;
+        socket.binaryType = "arraybuffer";
+
+        socket.onopen = () => {
+          log("WebSocket Connected", "ok");
+          resolve(socket);
+        };
+
+        socket.onerror = () => {
+          const reason = "WebSocket connection failed. Confirm the orchestrator is running on localhost:8080.";
+          log(reason, "error");
+          reject(new Error(reason));
+        };
+
+        socket.onclose = (event) => {
+          log(`WebSocket Closed (code ${event.code || "n/a"})`, app.stopping ? "info" : "warn");
+          if (!app.stopping && app.state !== "Disconnected" && app.state !== "Error") {
+            setState("Error", "WebSocket dropped unexpectedly.");
+          }
+        };
+
+        socket.onmessage = handleSocketMessage;
+      });
+    }
+
+    async function startSession() {
+      app.stopping = false;
+      resetMetrics();
+      elements.networkLog.textContent = "";
+      setState("Connecting");
+      log("Session start requested");
+
+      try {
+        await ensureAudioContext();
+        startVisualizer();
+
+        const socket = await connectWebSocket();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        app.mediaStream = stream;
+        log("Microphone permission granted", "ok");
+
+        app.micAnalyser = createAnalyser();
+        app.micSource = app.audioContext.createMediaStreamSource(stream);
+        app.micSource.connect(app.micAnalyser);
+        app.activeAnalyser = app.micAnalyser;
+        elements.visualizerMode.textContent = "microphone input";
+
+        const options = pickMediaRecorderOptions();
+        app.mediaRecorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
+
+        app.mediaRecorder.ondataavailable = async (event) => {
+          if (!event.data || event.data.size === 0 || socket.readyState !== WebSocket.OPEN) return;
+          const buffer = await event.data.arrayBuffer();
+          socket.send(buffer);
+          app.bytesSent += buffer.byteLength;
+          app.lastSentAt = performance.now();
+          updateByteMetrics();
+          log(`Sent audio chunk (${buffer.byteLength} bytes)`, "tx");
+        };
+
+        app.mediaRecorder.onerror = (event) => {
+          const reason = event.error?.message || "MediaRecorder failed.";
+          log(reason, "error");
+          setState("Error", reason);
+        };
+
+        app.mediaRecorder.start(CHUNK_TIMESLICE_MS);
+        setState("Listening");
+        log(`MediaRecorder started (${CHUNK_TIMESLICE_MS}ms chunks)`, "ok");
+      } catch (error) {
+        const reason = error?.message || "Unable to start audio session.";
+        log(reason, "error");
+        setState("Error", reason);
+        await stopSession({ resetState: false });
+      }
+    }
+
+    function pickMediaRecorderOptions() {
+      if (!window.MediaRecorder) return null;
+      const candidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType = candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate));
+      return mimeType ? { mimeType } : null;
+    }
+
+    async function handleSocketMessage(event) {
+      if (app.stopping || app.state === "Disconnected" || app.state === "Error") {
+        return;
+      }
+
+      if (!(event.data instanceof ArrayBuffer)) {
+        log("Received non-binary WebSocket message", "warn");
+        return;
+      }
+
+      const receivedAt = performance.now();
+      const payload = event.data;
+      app.bytesReceived += payload.byteLength;
+      updateByteMetrics();
+      log(`Received audio frame (${payload.byteLength} bytes)`, "rx");
+
+      if (!app.firstByteReceived && app.sessionStartedAt) {
+        app.firstByteReceived = true;
+        elements.ttfbMetric.textContent = formatMs(receivedAt - app.sessionStartedAt);
+      }
+
+      if (app.lastSentAt) {
+        elements.latencyMetric.textContent = formatMs(receivedAt - app.lastSentAt);
+      }
+
+      try {
+        await playDecodedAudio(payload.slice(0));
+      } catch (error) {
+        handleMockAudioFallback();
+      }
+    }
+
+    async function playDecodedAudio(arrayBuffer) {
+      await ensureAudioContext();
+      const decoded = await app.audioContext.decodeAudioData(arrayBuffer);
+      const source = app.audioContext.createBufferSource();
+      app.playbackAnalyser = app.playbackAnalyser || createAnalyser();
+      source.buffer = decoded;
+      source.connect(app.playbackAnalyser);
+      app.playbackAnalyser.connect(app.audioContext.destination);
+      app.activeAnalyser = app.playbackAnalyser;
+      elements.visualizerMode.textContent = "assistant playback";
+      setState("Playing Audio");
+      source.onended = () => {
+        if (app.state === "Playing Audio" && app.mediaRecorder?.state === "recording") {
+          app.activeAnalyser = app.micAnalyser;
+          elements.visualizerMode.textContent = "microphone input";
+          setState("Listening");
+        }
+      };
+      source.start(0);
+      log("Decoded and played assistant audio", "ok");
+    }
+
+    function handleMockAudioFallback() {
+      const now = performance.now();
+      const shouldLog = !app.mockFallbackSeen || now - app.lastMockFallbackLogAt > 2500;
+
+      if (shouldLog) {
+        log("[Mock Audio] Received payload, but requires WAV header", "warn");
+        app.lastMockFallbackLogAt = now;
+      }
+
+      if (!app.mockFallbackSeen) {
+        app.mockFallbackSeen = true;
+        playMockBeep();
+      } else {
+        showMockAudioSpike();
+      }
+    }
+
+    function showMockAudioSpike() {
+      app.visualSpikeUntil = performance.now() + 260;
+      elements.visualizerMode.textContent = "mock assistant playback";
+
+      if (app.mediaRecorder?.state === "recording" && app.state !== "Listening") {
+        setState("Listening");
+      }
+    }
+
+    function playMockBeep() {
+      if (!app.audioContext) return;
+      const oscillator = app.audioContext.createOscillator();
+      const gain = app.audioContext.createGain();
+      app.playbackAnalyser = app.playbackAnalyser || createAnalyser();
+
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(880, app.audioContext.currentTime);
+      gain.gain.setValueAtTime(0.0001, app.audioContext.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.13, app.audioContext.currentTime + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, app.audioContext.currentTime + 0.10);
+
+      oscillator.connect(gain);
+      gain.connect(app.playbackAnalyser);
+      app.playbackAnalyser.connect(app.audioContext.destination);
+
+      app.activeAnalyser = app.playbackAnalyser;
+      app.visualSpikeUntil = performance.now() + 450;
+      elements.visualizerMode.textContent = "mock assistant playback";
+      setState("Playing Audio");
+
+      oscillator.start();
+      oscillator.stop(app.audioContext.currentTime + 0.105);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        gain.disconnect();
+        if (app.state === "Playing Audio" && app.mediaRecorder?.state === "recording") {
+          app.activeAnalyser = app.micAnalyser;
+          elements.visualizerMode.textContent = "microphone input";
+          setState("Listening");
+        }
+      };
+      log("Generated one synthetic mock playback beep; future mock frames are visual-only", "ok");
+    }
+
+    async function stopSession(options = { resetState: true }) {
+      app.stopping = true;
+      log("Stopping session...");
+
+      if (app.mediaRecorder && app.mediaRecorder.state !== "inactive") {
+        app.mediaRecorder.stop();
+        log("MediaRecorder stopped");
+      }
+
+      if (app.mediaStream) {
+        app.mediaStream.getTracks().forEach((track) => track.stop());
+        log("Microphone tracks stopped");
+      }
+
+      if (app.socket) {
+        app.socket.onmessage = null;
+        app.socket.onopen = null;
+        app.socket.onerror = null;
+
+        if (app.socket.readyState === WebSocket.OPEN || app.socket.readyState === WebSocket.CONNECTING) {
+          app.socket.close(1000, "Client teardown");
+        }
+      }
+
+      [app.micSource, app.micAnalyser, app.playbackAnalyser].forEach((node) => {
+        try { node?.disconnect(); } catch (_) {}
+      });
+
+      app.mediaRecorder = null;
+      app.mediaStream = null;
+      app.socket = null;
+      app.micSource = null;
+      app.micAnalyser = null;
+      app.playbackAnalyser = null;
+      app.activeAnalyser = null;
+      app.stopping = false;
+
+      if (options.resetState) {
+        resetMetrics();
+        setState("Disconnected");
+      }
+      stopVisualizer();
+    }
+
+    elements.micButton.addEventListener("click", () => {
+      if (app.state === "Disconnected" || app.state === "Error") {
+        startSession();
+      } else {
+        stopSession();
+      }
+    });
+
+    elements.clearLogButton.addEventListener("click", () => {
+      elements.networkLog.textContent = "";
+      log("Terminal cleared");
+    });
+
+    window.addEventListener("beforeunload", () => {
+      if (app.mediaRecorder && app.mediaRecorder.state !== "inactive") {
+        app.mediaRecorder.stop();
+      }
+      app.mediaStream?.getTracks().forEach((track) => track.stop());
+      app.socket?.close();
+    });
+
+    lucide.createIcons();
+    setState("Disconnected");
+    startVisualizer();
+    log("Dashboard initialized");
+  </script>
+</body>
+</html>
