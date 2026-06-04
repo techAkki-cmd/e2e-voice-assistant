@@ -23,9 +23,25 @@ services:
     networks:
       - e2e-network
 
-  mock-inference:
-    build: ../inference-services/base_mock
-    container_name: e2e-mock-inference
+  asr-service:
+    build: ../inference-services/asr_service
+    container_name: e2e-asr-service
+    depends_on:
+      - rabbitmq
+    networks:
+      - e2e-network
+
+  llm-service:
+    build: ../inference-services/llm_service
+    container_name: e2e-llm-service
+    depends_on:
+      - rabbitmq
+    networks:
+      - e2e-network
+
+  tts-service:
+    build: ../inference-services/tts_service
+    container_name: e2e-tts-service
     depends_on:
       - rabbitmq
     networks:
