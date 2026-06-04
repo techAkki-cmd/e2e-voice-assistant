@@ -29,6 +29,8 @@ VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "2"))
 SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "700"))
 MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "300"))
 MAX_UTTERANCE_MS = int(os.getenv("ASR_MAX_UTTERANCE_MS", "12000"))
+INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "1.2"))
+ENERGY_SILENCE_THRESHOLD = float(os.getenv("ASR_ENERGY_SILENCE_THRESHOLD", "250"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
 
 
@@ -43,6 +45,8 @@ class SessionAudioBuffer:
     trailing_silence_ms: int = 0
     total_audio_ms: int = 0
     last_seen_monotonic: float = field(default_factory=time.monotonic)
+    flush_task: asyncio.Task | None = None
+    flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def rabbitmq_url() -> str:
@@ -94,6 +98,14 @@ def iter_vad_frames(pcm16: np.ndarray):
         yield raw[offset : offset + frame_bytes]
 
 
+def frame_has_enough_energy(frame: bytes) -> bool:
+    samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+    if samples.size == 0:
+        return False
+    rms = float(np.sqrt(np.mean(samples * samples)))
+    return rms >= ENERGY_SILENCE_THRESHOLD
+
+
 def update_vad_state(session: SessionAudioBuffer, vad: webrtcvad.Vad, pcm16: np.ndarray) -> None:
     if pcm16.size == 0:
         return
@@ -109,7 +121,7 @@ def update_vad_state(session: SessionAudioBuffer, vad: webrtcvad.Vad, pcm16: np.
     for offset in range(0, len(combined) - frame_bytes + 1, frame_bytes):
         frame = combined[offset : offset + frame_bytes]
         consumed_until = offset + frame_bytes
-        is_speech = vad.is_speech(frame, SAMPLE_RATE)
+        is_speech = frame_has_enough_energy(frame) and vad.is_speech(frame, SAMPLE_RATE)
 
         if is_speech:
             session.speech_started = True
@@ -177,11 +189,53 @@ async def publish_transcript(channel: aio_pika.Channel, transcript: str, correla
     )
 
 
+async def flush_session(
+    channel: aio_pika.Channel,
+    model: WhisperModel,
+    session: SessionAudioBuffer,
+    correlation_id: str | None,
+    reason: str,
+) -> None:
+    async with session.flush_lock:
+        if not session.pcm_chunks or session.speech_ms < MIN_SPEECH_MS:
+            return
+
+        transcript = await asyncio.to_thread(transcribe_buffer, model, session)
+        reset_utterance(session)
+
+        if transcript:
+            await publish_transcript(channel, transcript, correlation_id)
+            print(
+                f"[ASR] Published transcript via {reason}: {transcript!r}; correlation_id={correlation_id}",
+                flush=True,
+            )
+        else:
+            print(f"[ASR] Empty transcript after {reason} flush; correlation_id={correlation_id}", flush=True)
+
+
+async def inactivity_flush_later(
+    channel: aio_pika.Channel,
+    model: WhisperModel,
+    session: SessionAudioBuffer,
+    correlation_id: str | None,
+) -> None:
+    await asyncio.sleep(INACTIVITY_FLUSH_SECONDS)
+    if time.monotonic() - session.last_seen_monotonic >= INACTIVITY_FLUSH_SECONDS:
+        await flush_session(channel, model, session, correlation_id, "inactivity")
+
+
+def cancel_flush_task(session: SessionAudioBuffer) -> None:
+    if session.flush_task and not session.flush_task.done():
+        session.flush_task.cancel()
+    session.flush_task = None
+
+
 def cleanup_expired_sessions(sessions: Dict[str, SessionAudioBuffer]) -> None:
     now = time.monotonic()
     expired = [key for key, value in sessions.items() if now - value.last_seen_monotonic > SESSION_TTL_SECONDS]
     for key in expired:
         print(f"[ASR] Expiring inactive session buffer correlation_id={key}", flush=True)
+        cancel_flush_task(sessions[key])
         del sessions[key]
 
 
@@ -229,15 +283,13 @@ async def main() -> None:
                         flush=True,
                     )
 
+                    cancel_flush_task(session)
                     if should_flush(session):
-                        transcript = transcribe_buffer(model, session)
-                        reset_utterance(session)
-
-                        if transcript:
-                            await publish_transcript(channel, transcript, correlation_id)
-                            print(f"[ASR] Published transcript: {transcript!r}; correlation_id={correlation_id}", flush=True)
-                        else:
-                            print(f"[ASR] Empty transcript after utterance flush; correlation_id={correlation_id}", flush=True)
+                        await flush_session(channel, model, session, correlation_id, "vad")
+                    elif session.speech_started:
+                        session.flush_task = asyncio.create_task(
+                            inactivity_flush_later(channel, model, session, correlation_id)
+                        )
 
                     cleanup_expired_sessions(sessions)
                     await message.ack()
