@@ -54,6 +54,8 @@ def load_tts_model():
     print(f"[TTS] Loading MeloTTS language={TTS_LANGUAGE} device={TTS_DEVICE}", flush=True)
     model = TTS(language=TTS_LANGUAGE, device=TTS_DEVICE)
     speaker_ids = model.hps.data.spk2id
+    if not isinstance(speaker_ids, dict):
+        speaker_ids = vars(speaker_ids)
     speaker_id = speaker_ids.get(TTS_SPEAKER) or speaker_ids.get("EN-Default") or next(iter(speaker_ids.values()))
     print(f"[TTS] Using speaker={TTS_SPEAKER} speaker_id={speaker_id}", flush=True)
     return model, speaker_id
