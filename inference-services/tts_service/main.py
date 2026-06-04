@@ -202,7 +202,7 @@ async def main() -> None:
                     await message.ack()
                 except Exception as exc:
                     print(f"[TTS] Failed to synthesize text chunk: {exc}", flush=True)
-                    await message.nack(requeue=True)
+                    await message.nack(requeue=False)
 
 
 if __name__ == "__main__":

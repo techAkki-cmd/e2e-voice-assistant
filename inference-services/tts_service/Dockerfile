@@ -20,7 +20,8 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install -r requirements.txt \
-    && python3 -m unidic download
+    && python3 -m unidic download \
+    && python3 -c "import nltk; nltk.download('averaged_perceptron_tagger'); nltk.download('averaged_perceptron_tagger_eng'); nltk.download('cmudict')"
 
 COPY main.py .
 
