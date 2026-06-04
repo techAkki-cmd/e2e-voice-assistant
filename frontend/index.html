@@ -267,6 +267,10 @@
       micSource: null,
       micAnalyser: null,
       playbackAnalyser: null,
+      playbackQueue: [],
+      playbackInProgress: false,
+      playbackConnected: false,
+      currentPlaybackSource: null,
       activeAnalyser: null,
       animationFrameId: null,
       bytesSent: 0,
@@ -277,6 +281,7 @@
       visualSpikeUntil: 0,
       mockFallbackSeen: false,
       lastMockFallbackLogAt: 0,
+      lastSuppressedLogAt: 0,
       stopping: false,
     };
 
@@ -522,7 +527,13 @@
         startVisualizer();
 
         const socket = await connectWebSocket();
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
         app.mediaStream = stream;
         log("Microphone permission granted", "ok");
 
@@ -537,6 +548,14 @@
 
         app.mediaRecorder.ondataavailable = async (event) => {
           if (!event.data || event.data.size === 0 || socket.readyState !== WebSocket.OPEN) return;
+          if (app.playbackInProgress || app.state === "Playing Audio") {
+            const now = performance.now();
+            if (now - app.lastSuppressedLogAt > 1500) {
+              log("Suppressed microphone upload during assistant playback", "warn");
+              app.lastSuppressedLogAt = now;
+            }
+            return;
+          }
           const buffer = await event.data.arrayBuffer();
           socket.send(buffer);
           app.bytesSent += buffer.byteLength;
@@ -598,10 +617,29 @@
         elements.latencyMetric.textContent = formatMs(receivedAt - app.lastSentAt);
       }
 
-      try {
-        await playDecodedAudio(payload.slice(0));
-      } catch (error) {
-        handleMockAudioFallback();
+      app.playbackQueue.push(payload.slice(0));
+      processPlaybackQueue();
+    }
+
+    async function processPlaybackQueue() {
+      if (app.playbackInProgress) return;
+      app.playbackInProgress = true;
+
+      while (!app.stopping && app.playbackQueue.length > 0) {
+        const payload = app.playbackQueue.shift();
+        try {
+          await playDecodedAudio(payload);
+        } catch (error) {
+          handleMockAudioFallback();
+        }
+      }
+
+      app.playbackInProgress = false;
+      app.currentPlaybackSource = null;
+      if (!app.stopping && app.mediaRecorder?.state === "recording") {
+        app.activeAnalyser = app.micAnalyser;
+        elements.visualizerMode.textContent = "microphone input";
+        setState("Listening");
       }
     }
 
@@ -612,18 +650,22 @@
       app.playbackAnalyser = app.playbackAnalyser || createAnalyser();
       source.buffer = decoded;
       source.connect(app.playbackAnalyser);
-      app.playbackAnalyser.connect(app.audioContext.destination);
+      if (!app.playbackConnected) {
+        app.playbackAnalyser.connect(app.audioContext.destination);
+        app.playbackConnected = true;
+      }
+      app.currentPlaybackSource = source;
       app.activeAnalyser = app.playbackAnalyser;
       elements.visualizerMode.textContent = "assistant playback";
       setState("Playing Audio");
-      source.onended = () => {
-        if (app.state === "Playing Audio" && app.mediaRecorder?.state === "recording") {
-          app.activeAnalyser = app.micAnalyser;
-          elements.visualizerMode.textContent = "microphone input";
-          setState("Listening");
-        }
-      };
-      source.start(0);
+
+      await new Promise((resolve) => {
+        source.onended = () => {
+          try { source.disconnect(); } catch (_) {}
+          resolve();
+        };
+        source.start(0);
+      });
       log("Decoded and played assistant audio", "ok");
     }
 
@@ -667,7 +709,10 @@
 
       oscillator.connect(gain);
       gain.connect(app.playbackAnalyser);
-      app.playbackAnalyser.connect(app.audioContext.destination);
+      if (!app.playbackConnected) {
+        app.playbackAnalyser.connect(app.audioContext.destination);
+        app.playbackConnected = true;
+      }
 
       app.activeAnalyser = app.playbackAnalyser;
       app.visualSpikeUntil = performance.now() + 450;
@@ -679,7 +724,7 @@
       oscillator.onended = () => {
         oscillator.disconnect();
         gain.disconnect();
-        if (app.state === "Playing Audio" && app.mediaRecorder?.state === "recording") {
+        if (!app.playbackInProgress && app.state === "Playing Audio" && app.mediaRecorder?.state === "recording") {
           app.activeAnalyser = app.micAnalyser;
           elements.visualizerMode.textContent = "microphone input";
           setState("Listening");
@@ -712,6 +757,11 @@
         }
       }
 
+      app.playbackQueue = [];
+      app.playbackInProgress = false;
+      try { app.currentPlaybackSource?.stop(); } catch (_) {}
+      app.currentPlaybackSource = null;
+
       [app.micSource, app.micAnalyser, app.playbackAnalyser].forEach((node) => {
         try { node?.disconnect(); } catch (_) {}
       });
@@ -722,6 +772,7 @@
       app.micSource = null;
       app.micAnalyser = null;
       app.playbackAnalyser = null;
+      app.playbackConnected = false;
       app.activeAnalyser = null;
       app.stopping = false;
 
