@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
@@ -159,11 +158,7 @@ public class AudioStreamHandler implements WebSocketHandler {
     private OutboundMessage toOutboundMessage(String sessionId, WebSocketMessage message) {
         DataBuffer payload = message.getPayload();
         byte[] audioChunk = new byte[payload.readableByteCount()];
-        try {
-            payload.read(audioChunk);
-        } finally {
-            DataBufferUtils.release(payload);
-        }
+        payload.read(audioChunk);
 
         AMQP.BasicProperties properties = new AMQP.BasicProperties.Builder()
                 .contentType("application/octet-stream")
