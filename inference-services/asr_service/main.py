@@ -34,6 +34,8 @@ SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
 
 @dataclass
 class SessionAudioBuffer:
+    webm_chunks: List[bytes] = field(default_factory=list)
+    decoded_sample_count: int = 0
     pcm_chunks: List[np.ndarray] = field(default_factory=list)
     pending_pcm16: bytes = b""
     speech_started: bool = False
@@ -66,11 +68,22 @@ def load_asr_model() -> WhisperModel:
 
 
 def decode_webm_to_pcm16(webm_bytes: bytes) -> np.ndarray:
-    """Decode a browser MediaRecorder WebM/Opus chunk to 16kHz mono PCM16."""
+    """Decode a browser MediaRecorder WebM/Opus stream to 16kHz mono PCM16."""
     segment = AudioSegment.from_file(io.BytesIO(webm_bytes), format="webm")
     segment = segment.set_channels(1).set_frame_rate(SAMPLE_RATE).set_sample_width(2)
     pcm = np.frombuffer(segment.raw_data, dtype=np.int16)
     return pcm.copy()
+
+
+def append_and_decode_new_pcm(session: SessionAudioBuffer, webm_chunk: bytes) -> np.ndarray:
+    session.webm_chunks.append(webm_chunk)
+    decoded_pcm16 = decode_webm_to_pcm16(b"".join(session.webm_chunks))
+    if decoded_pcm16.size <= session.decoded_sample_count:
+        return np.empty(0, dtype=np.int16)
+
+    new_pcm16 = decoded_pcm16[session.decoded_sample_count :]
+    session.decoded_sample_count = decoded_pcm16.size
+    return new_pcm16
 
 
 def iter_vad_frames(pcm16: np.ndarray):
@@ -119,7 +132,7 @@ def should_flush(session: SessionAudioBuffer) -> bool:
     return (has_min_speech and has_pause) or hit_max
 
 
-def reset_session(session: SessionAudioBuffer) -> None:
+def reset_utterance(session: SessionAudioBuffer) -> None:
     session.pcm_chunks.clear()
     session.pending_pcm16 = b""
     session.speech_started = False
@@ -198,15 +211,19 @@ async def main() -> None:
                     session = sessions.setdefault(session_key, SessionAudioBuffer())
 
                     try:
-                        pcm16 = decode_webm_to_pcm16(message.body)
+                        pcm16 = append_and_decode_new_pcm(session, message.body)
                     except Exception as exc:
-                        print(f"[ASR] Failed to decode WebM chunk: {exc}; correlation_id={correlation_id}", flush=True)
+                        print(
+                            f"[ASR] Waiting for decodable WebM stream data after {len(session.webm_chunks)} chunks: "
+                            f"{exc}; correlation_id={correlation_id}",
+                            flush=True,
+                        )
                         await message.ack()
                         continue
 
                     update_vad_state(session, vad, pcm16)
                     print(
-                        f"[ASR] Decoded {len(message.body)} WebM bytes -> {pcm16.size} samples; "
+                        f"[ASR] Decoded {len(message.body)} WebM bytes -> {pcm16.size} new samples; "
                         f"speech_ms={session.speech_ms}; silence_ms={session.trailing_silence_ms}; "
                         f"correlation_id={correlation_id}",
                         flush=True,
@@ -214,7 +231,7 @@ async def main() -> None:
 
                     if should_flush(session):
                         transcript = transcribe_buffer(model, session)
-                        reset_session(session)
+                        reset_utterance(session)
 
                         if transcript:
                             await publish_transcript(channel, transcript, correlation_id)
