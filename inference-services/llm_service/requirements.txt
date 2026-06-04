@@ -1,1 +1,6 @@
 aio-pika==9.4.3
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.4.1
+accelerate==1.1.1
+bitsandbytes==0.44.1
+transformers==4.46.3

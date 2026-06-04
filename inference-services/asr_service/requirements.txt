@@ -1,1 +1,5 @@
 aio-pika==9.4.3
+faster-whisper==1.1.1
+numpy==1.26.4
+pydub==0.25.1
+webrtcvad==2.0.10

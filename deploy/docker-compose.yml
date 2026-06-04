@@ -26,6 +26,13 @@ services:
   asr-service:
     build: ../inference-services/asr_service
     container_name: e2e-asr-service
+    gpus: all
+    environment:
+      - HF_HOME=/models/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - model-cache:/models
     depends_on:
       - rabbitmq
     networks:
@@ -34,14 +41,28 @@ services:
   llm-service:
     build: ../inference-services/llm_service
     container_name: e2e-llm-service
+    gpus: all
+    environment:
+      - HF_HOME=/models/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:
       - rabbitmq
+    volumes:
+      - model-cache:/models
     networks:
       - e2e-network
 
   tts-service:
     build: ../inference-services/tts_service
     container_name: e2e-tts-service
+    gpus: all
+    environment:
+      - HF_HOME=/models/huggingface
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - model-cache:/models
     depends_on:
       - rabbitmq
     networks:
@@ -50,3 +71,6 @@ services:
 networks:
   e2e-network:
     driver: bridge
+
+volumes:
+  model-cache:
