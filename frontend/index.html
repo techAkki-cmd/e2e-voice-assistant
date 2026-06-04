@@ -691,6 +691,7 @@
 
     function interruptAssistantPlayback() {
       log("Barge-in requested; clearing assistant playback queue", "warn");
+      sendBargeInSignal();
       app.playbackGeneration += 1;
       app.playbackQueue = [];
       app.playbackInProgress = false;
@@ -700,6 +701,16 @@
       app.activeAnalyser = app.micAnalyser;
       elements.visualizerMode.textContent = "microphone input";
       setState("Listening");
+    }
+
+    function sendBargeInSignal() {
+      if (!app.socket || app.socket.readyState !== WebSocket.OPEN) {
+        log("Unable to send barge-in control signal; WebSocket is not open", "warn");
+        return;
+      }
+
+      app.socket.send(JSON.stringify({ action: "barge_in" }));
+      log("Sent barge-in control signal", "tx");
     }
 
     async function stopSession(options = { resetState: true }) {

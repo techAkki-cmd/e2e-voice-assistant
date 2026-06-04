@@ -36,6 +36,7 @@ STREAM_FLUSH_CHARS = int(os.getenv("LLM_STREAM_FLUSH_CHARS", "16"))
 HISTORY_TURNS = int(os.getenv("LLM_HISTORY_TURNS", "5"))
 SESSION_TTL_SECONDS = int(os.getenv("LLM_SESSION_TTL_SECONDS", "900"))
 INTERRUPT_TTL_SECONDS = float(os.getenv("LLM_INTERRUPT_TTL_SECONDS", "15"))
+LLM_WARMUP_ENABLED = os.getenv("LLM_WARMUP_ENABLED", "true").lower() == "true"
 
 SYSTEM_PROMPT = os.getenv(
     "LLM_SYSTEM_PROMPT",
@@ -80,6 +81,18 @@ def load_model():
         trust_remote_code=True,
     )
     model.eval()
+    if LLM_WARMUP_ENABLED:
+        print("[LLM] Running startup warmup generation...", flush=True)
+        inputs = build_inputs(tokenizer, model, [], "Say ready.")
+        with torch.inference_mode():
+            model.generate(
+                **inputs,
+                max_new_tokens=2,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+        print("[LLM] Startup warmup complete", flush=True)
     return tokenizer, model
 
 

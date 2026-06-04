@@ -24,13 +24,9 @@ import reactor.rabbitmq.Sender;
 public class AudioStreamHandler implements WebSocketHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AudioStreamHandler.class);
-    private static final int OUTPUT_SAMPLE_RATE = 44_100;
-    private static final int PCM16_BYTES_PER_SAMPLE = 2;
-    private static final long PLAYBACK_GRACE_MILLIS = 250;
     private static final long KILL_DEBOUNCE_MILLIS = 750;
     private static final ConcurrentHashMap<String, WebSocketSession> sessionRegistry = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Sinks.Many<byte[]>> outboundAudioSinks = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<String, Long> playbackActiveUntilMillis = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Long> lastKillSignalAtMillis = new ConcurrentHashMap<>();
 
     private final Sender sender;
@@ -48,9 +44,17 @@ public class AudioStreamHandler implements WebSocketHandler {
         outboundAudioSinks.put(sessionId, outboundAudioSink);
 
         Flux<OutboundMessage> audioMessages = session.receive()
-                .filter(message -> message.getType() == WebSocketMessage.Type.BINARY)
-                .flatMap(message -> maybePublishBargeInSignal(sessionId)
-                        .thenReturn(toOutboundMessage(sessionId, message)));
+                .flatMap(message -> {
+                    if (message.getType() == WebSocketMessage.Type.BINARY) {
+                        return Mono.just(toOutboundMessage(sessionId, message));
+                    }
+
+                    if (message.getType() == WebSocketMessage.Type.TEXT) {
+                        return handleControlMessage(sessionId, message).then(Mono.empty());
+                    }
+
+                    return Mono.empty();
+                });
 
         Mono<Void> inboundAudio = sender.declareQueue(QueueSpecification.queue(AUDIO_INCOMING_RAW_QUEUE).durable(true))
                 .then(sender.send(audioMessages))
@@ -101,37 +105,27 @@ public class AudioStreamHandler implements WebSocketHandler {
             return false;
         }
 
-        markPlaybackActive(correlationId, audio.length);
         return true;
     }
 
     private static void cleanupSession(String sessionId) {
         sessionRegistry.remove(sessionId);
         outboundAudioSinks.remove(sessionId);
-        playbackActiveUntilMillis.remove(sessionId);
         lastKillSignalAtMillis.remove(sessionId);
     }
 
-    private static void markPlaybackActive(String correlationId, int audioByteLength) {
-        long now = System.currentTimeMillis();
-        long durationMillis = Math.max(
-                20,
-                Math.round((audioByteLength / (double) PCM16_BYTES_PER_SAMPLE) * 1000.0 / OUTPUT_SAMPLE_RATE)
-        );
-
-        playbackActiveUntilMillis.compute(correlationId, (key, existingUntil) -> {
-            long base = existingUntil != null && existingUntil > now ? existingUntil : now;
-            return base + durationMillis + PLAYBACK_GRACE_MILLIS;
-        });
-    }
-
-    private Mono<Void> maybePublishBargeInSignal(String sessionId) {
-        long now = System.currentTimeMillis();
-        Long activeUntil = playbackActiveUntilMillis.get(sessionId);
-        if (activeUntil == null || activeUntil < now) {
+    private Mono<Void> handleControlMessage(String sessionId, WebSocketMessage message) {
+        String payload = message.getPayloadAsText();
+        if (!payload.contains("barge_in")) {
+            LOGGER.debug("Ignoring unsupported WebSocket control message for session {}: {}", sessionId, payload);
             return Mono.empty();
         }
 
+        return publishBargeInSignal(sessionId);
+    }
+
+    private Mono<Void> publishBargeInSignal(String sessionId) {
+        long now = System.currentTimeMillis();
         Long lastKillAt = lastKillSignalAtMillis.get(sessionId);
         if (lastKillAt != null && now - lastKillAt < KILL_DEBOUNCE_MILLIS) {
             return Mono.empty();

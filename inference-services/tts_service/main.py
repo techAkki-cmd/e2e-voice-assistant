@@ -29,6 +29,7 @@ TTS_OUTPUT_SAMPLE_RATE = int(os.getenv("TTS_OUTPUT_SAMPLE_RATE", "44100"))
 TTS_INACTIVITY_FLUSH_SECONDS = float(os.getenv("TTS_INACTIVITY_FLUSH_SECONDS", "1.2"))
 TTS_SESSION_TTL_SECONDS = float(os.getenv("TTS_SESSION_TTL_SECONDS", "120"))
 INTERRUPT_DRAIN_SECONDS = float(os.getenv("TTS_INTERRUPT_DRAIN_SECONDS", "0.8"))
+TTS_WARMUP_ENABLED = os.getenv("TTS_WARMUP_ENABLED", "true").lower() == "true"
 CLAUSE_PATTERN = re.compile(r"^(.+?[,.!?])(?:\s+|$)", re.DOTALL)
 
 
@@ -65,6 +66,11 @@ def load_tts_model():
         f"native_sample_rate={sample_rate} output_sample_rate={TTS_OUTPUT_SAMPLE_RATE}",
         flush=True,
     )
+    if TTS_WARMUP_ENABLED:
+        print("[TTS] Running startup warmup synthesis...", flush=True)
+        with torch.inference_mode():
+            model.tts_to_file("Ready.", speaker_id, output_path=None, speed=TTS_SPEED, quiet=True)
+        print("[TTS] Startup warmup complete", flush=True)
     return model, speaker_id, sample_rate
 
 
