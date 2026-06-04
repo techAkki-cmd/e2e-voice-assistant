@@ -16,10 +16,16 @@ import reactor.rabbitmq.SenderOptions;
 public class RabbitMQConfig {
 
     public static final String AUDIO_INCOMING_RAW_QUEUE = "audio.incoming.raw";
+    public static final String AUDIO_OUTGOING_STREAM_QUEUE = "audio.outgoing.stream";
 
     @Bean
     public Queue audioIncomingRawQueue() {
         return new Queue(AUDIO_INCOMING_RAW_QUEUE, true);
+    }
+
+    @Bean
+    public Queue audioOutgoingStreamQueue() {
+        return new Queue(AUDIO_OUTGOING_STREAM_QUEUE, true);
     }
 
     @Bean

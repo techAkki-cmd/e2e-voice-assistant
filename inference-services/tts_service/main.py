@@ -46,18 +46,26 @@ async def main() -> None:
         async with incoming_queue.iterator() as queue_iter:
             async for message in queue_iter:
                 try:
+                    correlation_id = message.correlation_id
+                    if not correlation_id:
+                        print("[TTS] Received token without correlation_id")
+
                     text_token = message.body.decode("utf-8")
-                    print(f"[TTS] Received token: {text_token!r}")
+                    print(f"[TTS] Received token: {text_token!r}; correlation_id={correlation_id}")
 
                     for audio_frame in synthesize_text_to_audio(text_token):
                         await channel.default_exchange.publish(
                             aio_pika.Message(
                                 audio_frame,
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                                correlation_id=correlation_id,
                             ),
                             routing_key=AUDIO_OUTGOING_QUEUE,
                         )
-                        print(f"[TTS] Published {len(audio_frame)} audio bytes")
+                        print(
+                            f"[TTS] Published {len(audio_frame)} audio bytes; "
+                            f"correlation_id={correlation_id}"
+                        )
 
                     await message.ack()
                 except Exception as exc:

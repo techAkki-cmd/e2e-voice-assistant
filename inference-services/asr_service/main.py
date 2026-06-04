@@ -50,9 +50,16 @@ async def main() -> None:
         async with incoming_queue.iterator() as queue_iter:
             async for message in queue_iter:
                 try:
+                    correlation_id = message.correlation_id
+                    if not correlation_id:
+                        print("[ASR] Received audio chunk without correlation_id")
+
                     audio_buffer.extend(message.body)
                     buffered_chunks += 1
-                    print(f"[ASR] Buffered {len(message.body)} bytes; chunks={buffered_chunks}")
+                    print(
+                        f"[ASR] Buffered {len(message.body)} bytes; "
+                        f"chunks={buffered_chunks}; correlation_id={correlation_id}"
+                    )
 
                     if buffered_chunks >= UTTERANCE_CHUNK_TARGET:
                         transcript = process_speech_to_text(bytes(audio_buffer))
@@ -60,10 +67,14 @@ async def main() -> None:
                             aio_pika.Message(
                                 transcript.encode("utf-8"),
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                                correlation_id=correlation_id,
                             ),
                             routing_key=TEXT_LLM_QUEUE,
                         )
-                        print(f"[ASR] Published transcript: {transcript}")
+                        print(
+                            f"[ASR] Published transcript: {transcript}; "
+                            f"correlation_id={correlation_id}"
+                        )
                         audio_buffer.clear()
                         buffered_chunks = 0
 

@@ -57,18 +57,23 @@ async def main() -> None:
         async with incoming_queue.iterator() as queue_iter:
             async for message in queue_iter:
                 try:
+                    correlation_id = message.correlation_id
+                    if not correlation_id:
+                        print("[LLM] Received transcript without correlation_id")
+
                     user_text = message.body.decode("utf-8")
-                    print(f"[LLM] Received transcript: {user_text}")
+                    print(f"[LLM] Received transcript: {user_text}; correlation_id={correlation_id}")
 
                     async for token in stream_response_tokens(user_text):
                         await channel.default_exchange.publish(
                             aio_pika.Message(
                                 token.encode("utf-8"),
                                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                                correlation_id=correlation_id,
                             ),
                             routing_key=TEXT_TTS_QUEUE,
                         )
-                        print(f"[LLM] Published token: {token!r}")
+                        print(f"[LLM] Published token: {token!r}; correlation_id={correlation_id}")
 
                     await message.ack()
                 except Exception as exc:
