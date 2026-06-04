@@ -235,7 +235,10 @@
 
   <script>
     const WS_URL = "ws://localhost:8080/api/v1/audio/stream";
-    const CHUNK_TIMESLICE_MS = 250;
+    const INPUT_SAMPLE_RATE = 16000;
+    const INPUT_FRAME_MS = 20;
+    const INPUT_FRAME_BYTES = 640;
+    const OUTPUT_SAMPLE_RATE = 44100;
 
     const elements = {
       micButton: document.getElementById("micButton"),
@@ -262,15 +265,17 @@
       state: "Disconnected",
       socket: null,
       mediaStream: null,
-      mediaRecorder: null,
       audioContext: null,
       micSource: null,
       micAnalyser: null,
+      workletNode: null,
+      silenceGain: null,
       playbackAnalyser: null,
       playbackQueue: [],
       playbackInProgress: false,
       playbackConnected: false,
       currentPlaybackSource: null,
+      playbackGeneration: 0,
       activeAnalyser: null,
       animationFrameId: null,
       bytesSent: 0,
@@ -279,8 +284,6 @@
       sessionStartedAt: null,
       firstByteReceived: false,
       visualSpikeUntil: 0,
-      mockFallbackSeen: false,
-      lastMockFallbackLogAt: 0,
       lastSuppressedLogAt: 0,
       stopping: false,
     };
@@ -301,13 +304,13 @@
       Listening: {
         dot: "bg-emerald-300",
         badge: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
-        hint: "Streaming microphone chunks every 250ms.",
+        hint: "Streaming 16 kHz PCM16 microphone frames every 20ms.",
         icon: "mic",
       },
       "Playing Audio": {
         dot: "bg-cyan-300",
         badge: "border-cyan-400/30 bg-cyan-400/10 text-cyan-200",
-        hint: "Receiving and playing assistant audio.",
+        hint: "Assistant audio is playing. Click the mic to interrupt.",
         icon: "volume-2",
       },
       Error: {
@@ -378,8 +381,6 @@
       app.lastSentAt = null;
       app.sessionStartedAt = performance.now();
       app.firstByteReceived = false;
-      app.mockFallbackSeen = false;
-      app.lastMockFallbackLogAt = 0;
       elements.latencyMetric.textContent = "--";
       elements.ttfbMetric.textContent = "--";
       elements.bytesSentMetric.textContent = "0";
@@ -406,6 +407,13 @@
       }
 
       return Promise.resolve(app.audioContext);
+    }
+
+    async function ensureAudioWorklet() {
+      if (!app.audioContext.audioWorklet) {
+        throw new Error("AudioWorklet is not supported in this browser.");
+      }
+      await app.audioContext.audioWorklet.addModule("./audio-processor.js");
     }
 
     function createAnalyser() {
@@ -536,43 +544,28 @@
         });
         app.mediaStream = stream;
         log("Microphone permission granted", "ok");
+        await ensureAudioWorklet();
 
         app.micAnalyser = createAnalyser();
         app.micSource = app.audioContext.createMediaStreamSource(stream);
         app.micSource.connect(app.micAnalyser);
+        app.workletNode = new AudioWorkletNode(app.audioContext, "pcm16-capture-processor", {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        });
+        app.silenceGain = app.audioContext.createGain();
+        app.silenceGain.gain.value = 0;
+
+        app.micAnalyser.connect(app.workletNode);
+        app.workletNode.connect(app.silenceGain);
+        app.silenceGain.connect(app.audioContext.destination);
+        app.workletNode.port.onmessage = (event) => sendPcmFrame(event.data, socket);
+
         app.activeAnalyser = app.micAnalyser;
         elements.visualizerMode.textContent = "microphone input";
-
-        const options = pickMediaRecorderOptions();
-        app.mediaRecorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
-
-        app.mediaRecorder.ondataavailable = async (event) => {
-          if (!event.data || event.data.size === 0 || socket.readyState !== WebSocket.OPEN) return;
-          if (app.playbackInProgress || app.state === "Playing Audio") {
-            const now = performance.now();
-            if (now - app.lastSuppressedLogAt > 1500) {
-              log("Suppressed microphone upload during assistant playback", "warn");
-              app.lastSuppressedLogAt = now;
-            }
-            return;
-          }
-          const buffer = await event.data.arrayBuffer();
-          socket.send(buffer);
-          app.bytesSent += buffer.byteLength;
-          app.lastSentAt = performance.now();
-          updateByteMetrics();
-          log(`Sent audio chunk (${buffer.byteLength} bytes)`, "tx");
-        };
-
-        app.mediaRecorder.onerror = (event) => {
-          const reason = event.error?.message || "MediaRecorder failed.";
-          log(reason, "error");
-          setState("Error", reason);
-        };
-
-        app.mediaRecorder.start(CHUNK_TIMESLICE_MS);
         setState("Listening");
-        log(`MediaRecorder started (${CHUNK_TIMESLICE_MS}ms chunks)`, "ok");
+        log(`AudioWorklet started (${INPUT_SAMPLE_RATE} Hz PCM16, ${INPUT_FRAME_MS}ms frames)`, "ok");
       } catch (error) {
         const reason = error?.message || "Unable to start audio session.";
         log(reason, "error");
@@ -581,15 +574,30 @@
       }
     }
 
-    function pickMediaRecorderOptions() {
-      if (!window.MediaRecorder) return null;
-      const candidates = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/ogg;codecs=opus",
-      ];
-      const mimeType = candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate));
-      return mimeType ? { mimeType } : null;
+    function sendPcmFrame(frame, socket) {
+      if (!(frame instanceof ArrayBuffer) || frame.byteLength === 0 || socket.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      if (app.playbackInProgress || app.state === "Playing Audio") {
+        const now = performance.now();
+        if (now - app.lastSuppressedLogAt > 1500) {
+          log("Suppressed microphone upload during assistant playback", "warn");
+          app.lastSuppressedLogAt = now;
+        }
+        return;
+      }
+
+      socket.send(frame);
+      app.bytesSent += frame.byteLength;
+      app.lastSentAt = performance.now();
+      updateByteMetrics();
+
+      if (frame.byteLength !== INPUT_FRAME_BYTES) {
+        log(`Sent PCM frame (${frame.byteLength} bytes)`, "tx");
+      } else if (app.bytesSent <= INPUT_FRAME_BYTES * 5 || app.bytesSent % (INPUT_FRAME_BYTES * 50) === 0) {
+        log(`Sent PCM frame (${frame.byteLength} bytes)`, "tx");
+      }
     }
 
     async function handleSocketMessage(event) {
@@ -624,31 +632,41 @@
     async function processPlaybackQueue() {
       if (app.playbackInProgress) return;
       app.playbackInProgress = true;
+      const generation = app.playbackGeneration;
 
-      while (!app.stopping && app.playbackQueue.length > 0) {
+      while (!app.stopping && generation === app.playbackGeneration && app.playbackQueue.length > 0) {
         const payload = app.playbackQueue.shift();
-        try {
-          await playDecodedAudio(payload);
-        } catch (error) {
-          handleMockAudioFallback();
-        }
+        await playPcmAudio(payload, generation);
       }
 
-      app.playbackInProgress = false;
-      app.currentPlaybackSource = null;
-      if (!app.stopping && app.mediaRecorder?.state === "recording") {
+      if (generation === app.playbackGeneration) {
+        app.playbackInProgress = false;
+        app.currentPlaybackSource = null;
+      }
+
+      if (!app.stopping && app.state !== "Disconnected" && app.state !== "Error") {
         app.activeAnalyser = app.micAnalyser;
         elements.visualizerMode.textContent = "microphone input";
         setState("Listening");
       }
     }
 
-    async function playDecodedAudio(arrayBuffer) {
+    async function playPcmAudio(arrayBuffer, generation) {
       await ensureAudioContext();
-      const decoded = await app.audioContext.decodeAudioData(arrayBuffer);
+      const int16 = new Int16Array(arrayBuffer);
+      if (int16.length === 0 || generation !== app.playbackGeneration) {
+        return;
+      }
+
+      const audioBuffer = app.audioContext.createBuffer(1, int16.length, OUTPUT_SAMPLE_RATE);
+      const channelData = audioBuffer.getChannelData(0);
+      for (let index = 0; index < int16.length; index += 1) {
+        channelData[index] = int16[index] / 32768;
+      }
+
       const source = app.audioContext.createBufferSource();
       app.playbackAnalyser = app.playbackAnalyser || createAnalyser();
-      source.buffer = decoded;
+      source.buffer = audioBuffer;
       source.connect(app.playbackAnalyser);
       if (!app.playbackConnected) {
         app.playbackAnalyser.connect(app.audioContext.destination);
@@ -666,81 +684,27 @@
         };
         source.start(0);
       });
-      log("Decoded and played assistant audio", "ok");
-    }
-
-    function handleMockAudioFallback() {
-      const now = performance.now();
-      const shouldLog = !app.mockFallbackSeen || now - app.lastMockFallbackLogAt > 2500;
-
-      if (shouldLog) {
-        log("[Mock Audio] Received payload, but requires WAV header", "warn");
-        app.lastMockFallbackLogAt = now;
-      }
-
-      if (!app.mockFallbackSeen) {
-        app.mockFallbackSeen = true;
-        playMockBeep();
-      } else {
-        showMockAudioSpike();
+      if (generation === app.playbackGeneration) {
+        log(`Played PCM assistant audio (${int16.length} samples at ${OUTPUT_SAMPLE_RATE} Hz)`, "ok");
       }
     }
 
-    function showMockAudioSpike() {
-      app.visualSpikeUntil = performance.now() + 260;
-      elements.visualizerMode.textContent = "mock assistant playback";
-
-      if (app.mediaRecorder?.state === "recording" && app.state !== "Listening") {
-        setState("Listening");
-      }
-    }
-
-    function playMockBeep() {
-      if (!app.audioContext) return;
-      const oscillator = app.audioContext.createOscillator();
-      const gain = app.audioContext.createGain();
-      app.playbackAnalyser = app.playbackAnalyser || createAnalyser();
-
-      oscillator.type = "sine";
-      oscillator.frequency.setValueAtTime(880, app.audioContext.currentTime);
-      gain.gain.setValueAtTime(0.0001, app.audioContext.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.13, app.audioContext.currentTime + 0.012);
-      gain.gain.exponentialRampToValueAtTime(0.0001, app.audioContext.currentTime + 0.10);
-
-      oscillator.connect(gain);
-      gain.connect(app.playbackAnalyser);
-      if (!app.playbackConnected) {
-        app.playbackAnalyser.connect(app.audioContext.destination);
-        app.playbackConnected = true;
-      }
-
-      app.activeAnalyser = app.playbackAnalyser;
-      app.visualSpikeUntil = performance.now() + 450;
-      elements.visualizerMode.textContent = "mock assistant playback";
-      setState("Playing Audio");
-
-      oscillator.start();
-      oscillator.stop(app.audioContext.currentTime + 0.105);
-      oscillator.onended = () => {
-        oscillator.disconnect();
-        gain.disconnect();
-        if (!app.playbackInProgress && app.state === "Playing Audio" && app.mediaRecorder?.state === "recording") {
-          app.activeAnalyser = app.micAnalyser;
-          elements.visualizerMode.textContent = "microphone input";
-          setState("Listening");
-        }
-      };
-      log("Generated one synthetic mock playback beep; future mock frames are visual-only", "ok");
+    function interruptAssistantPlayback() {
+      log("Barge-in requested; clearing assistant playback queue", "warn");
+      app.playbackGeneration += 1;
+      app.playbackQueue = [];
+      app.playbackInProgress = false;
+      try { app.currentPlaybackSource?.stop(); } catch (_) {}
+      try { app.currentPlaybackSource?.disconnect(); } catch (_) {}
+      app.currentPlaybackSource = null;
+      app.activeAnalyser = app.micAnalyser;
+      elements.visualizerMode.textContent = "microphone input";
+      setState("Listening");
     }
 
     async function stopSession(options = { resetState: true }) {
       app.stopping = true;
       log("Stopping session...");
-
-      if (app.mediaRecorder && app.mediaRecorder.state !== "inactive") {
-        app.mediaRecorder.stop();
-        log("MediaRecorder stopped");
-      }
 
       if (app.mediaStream) {
         app.mediaStream.getTracks().forEach((track) => track.stop());
@@ -759,18 +723,20 @@
 
       app.playbackQueue = [];
       app.playbackInProgress = false;
+      app.playbackGeneration += 1;
       try { app.currentPlaybackSource?.stop(); } catch (_) {}
       app.currentPlaybackSource = null;
 
-      [app.micSource, app.micAnalyser, app.playbackAnalyser].forEach((node) => {
+      [app.workletNode, app.silenceGain, app.micSource, app.micAnalyser, app.playbackAnalyser].forEach((node) => {
         try { node?.disconnect(); } catch (_) {}
       });
 
-      app.mediaRecorder = null;
       app.mediaStream = null;
       app.socket = null;
       app.micSource = null;
       app.micAnalyser = null;
+      app.workletNode = null;
+      app.silenceGain = null;
       app.playbackAnalyser = null;
       app.playbackConnected = false;
       app.activeAnalyser = null;
@@ -786,6 +752,8 @@
     elements.micButton.addEventListener("click", () => {
       if (app.state === "Disconnected" || app.state === "Error") {
         startSession();
+      } else if (app.state === "Playing Audio" || app.playbackInProgress) {
+        interruptAssistantPlayback();
       } else {
         stopSession();
       }
@@ -797,9 +765,6 @@
     });
 
     window.addEventListener("beforeunload", () => {
-      if (app.mediaRecorder && app.mediaRecorder.state !== "inactive") {
-        app.mediaRecorder.stop();
-      }
       app.mediaStream?.getTracks().forEach((track) => track.stop());
       app.socket?.close();
     });

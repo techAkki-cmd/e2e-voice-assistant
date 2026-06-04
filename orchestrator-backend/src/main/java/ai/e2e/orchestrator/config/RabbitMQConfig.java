@@ -1,6 +1,7 @@
 package ai.e2e.orchestrator.config;
 
 import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.core.FanoutExchange;
 import org.springframework.amqp.rabbit.connection.CachingConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitAdmin;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,6 +18,7 @@ public class RabbitMQConfig {
 
     public static final String AUDIO_INCOMING_RAW_QUEUE = "audio.incoming.raw";
     public static final String AUDIO_OUTGOING_STREAM_QUEUE = "audio.outgoing.stream";
+    public static final String CONTROL_SIGNALS_EXCHANGE = "control.signals";
 
     @Bean
     public Queue audioIncomingRawQueue() {
@@ -26,6 +28,11 @@ public class RabbitMQConfig {
     @Bean
     public Queue audioOutgoingStreamQueue() {
         return new Queue(AUDIO_OUTGOING_STREAM_QUEUE, true);
+    }
+
+    @Bean
+    public FanoutExchange controlSignalsExchange() {
+        return new FanoutExchange(CONTROL_SIGNALS_EXCHANGE, true, false);
     }
 
     @Bean

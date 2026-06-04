@@ -3,5 +3,4 @@ aio-pika==9.4.3
 torch==2.4.1
 torchaudio==2.4.1
 numpy==1.26.4
-scipy==1.13.1
 git+https://github.com/myshell-ai/MeloTTS.git@main

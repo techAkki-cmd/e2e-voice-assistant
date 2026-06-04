@@ -1,5 +1,4 @@
 import asyncio
-import io
 import os
 import time
 from dataclasses import dataclass, field
@@ -9,7 +8,6 @@ import aio_pika
 import numpy as np
 import webrtcvad
 from faster_whisper import WhisperModel
-from pydub import AudioSegment
 
 
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
@@ -24,26 +22,25 @@ ASR_MODEL_NAME = os.getenv("ASR_MODEL_NAME", "tiny.en")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "cuda")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "float16")
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
-VAD_FRAME_MS = int(os.getenv("ASR_VAD_FRAME_MS", "30"))
+VAD_FRAME_MS = int(os.getenv("ASR_VAD_FRAME_MS", "20"))
 VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "2"))
-SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "700"))
+SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "500"))
 MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "300"))
 MAX_UTTERANCE_MS = int(os.getenv("ASR_MAX_UTTERANCE_MS", "12000"))
-INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "1.2"))
+INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "0.8"))
 ENERGY_SILENCE_THRESHOLD = float(os.getenv("ASR_ENERGY_SILENCE_THRESHOLD", "250"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
 
 
 @dataclass
 class SessionAudioBuffer:
-    webm_chunks: List[bytes] = field(default_factory=list)
-    decoded_sample_count: int = 0
     pcm_chunks: List[np.ndarray] = field(default_factory=list)
     pending_pcm16: bytes = b""
     speech_started: bool = False
     speech_ms: int = 0
     trailing_silence_ms: int = 0
     total_audio_ms: int = 0
+    received_frames: int = 0
     last_seen_monotonic: float = field(default_factory=time.monotonic)
     flush_task: asyncio.Task | None = None
     flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -71,35 +68,15 @@ def load_asr_model() -> WhisperModel:
     return WhisperModel(ASR_MODEL_NAME, device=ASR_DEVICE, compute_type=ASR_COMPUTE_TYPE)
 
 
-def decode_webm_to_pcm16(webm_bytes: bytes) -> np.ndarray:
-    """Decode a browser MediaRecorder WebM/Opus stream to 16kHz mono PCM16."""
-    segment = AudioSegment.from_file(io.BytesIO(webm_bytes), format="webm")
-    segment = segment.set_channels(1).set_frame_rate(SAMPLE_RATE).set_sample_width(2)
-    pcm = np.frombuffer(segment.raw_data, dtype=np.int16)
-    return pcm.copy()
-
-
-def append_and_decode_new_pcm(session: SessionAudioBuffer, webm_chunk: bytes) -> np.ndarray:
-    session.webm_chunks.append(webm_chunk)
-    decoded_pcm16 = decode_webm_to_pcm16(b"".join(session.webm_chunks))
-    if decoded_pcm16.size <= session.decoded_sample_count:
+def pcm16_from_message(body: bytes) -> np.ndarray:
+    usable_length = len(body) - (len(body) % 2)
+    if usable_length <= 0:
         return np.empty(0, dtype=np.int16)
-
-    new_pcm16 = decoded_pcm16[session.decoded_sample_count :]
-    session.decoded_sample_count = decoded_pcm16.size
-    return new_pcm16
-
-
-def iter_vad_frames(pcm16: np.ndarray):
-    frame_samples = int(SAMPLE_RATE * VAD_FRAME_MS / 1000)
-    frame_bytes = frame_samples * 2
-    raw = pcm16.tobytes()
-    for offset in range(0, len(raw) - frame_bytes + 1, frame_bytes):
-        yield raw[offset : offset + frame_bytes]
+    return np.frombuffer(body[:usable_length], dtype="<i2").copy()
 
 
 def frame_has_enough_energy(frame: bytes) -> bool:
-    samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
+    samples = np.frombuffer(frame, dtype="<i2").astype(np.float32)
     if samples.size == 0:
         return False
     rms = float(np.sqrt(np.mean(samples * samples)))
@@ -111,6 +88,7 @@ def update_vad_state(session: SessionAudioBuffer, vad: webrtcvad.Vad, pcm16: np.
         return
 
     session.pcm_chunks.append(pcm16)
+    session.received_frames += 1
     session.total_audio_ms += int(pcm16.size / SAMPLE_RATE * 1000)
     combined = session.pending_pcm16 + pcm16.tobytes()
 
@@ -151,6 +129,7 @@ def reset_utterance(session: SessionAudioBuffer) -> None:
     session.speech_ms = 0
     session.trailing_silence_ms = 0
     session.total_audio_ms = 0
+    session.received_frames = 0
     session.last_seen_monotonic = time.monotonic()
 
 
@@ -198,15 +177,19 @@ async def flush_session(
 ) -> None:
     async with session.flush_lock:
         if not session.pcm_chunks or session.speech_ms < MIN_SPEECH_MS:
+            if session.total_audio_ms >= MAX_UTTERANCE_MS:
+                reset_utterance(session)
             return
 
+        buffered_ms = session.total_audio_ms
         transcript = await asyncio.to_thread(transcribe_buffer, model, session)
         reset_utterance(session)
 
         if transcript:
             await publish_transcript(channel, transcript, correlation_id)
             print(
-                f"[ASR] Published transcript via {reason}: {transcript!r}; correlation_id={correlation_id}",
+                f"[ASR] Published transcript via {reason}: {transcript!r}; "
+                f"buffered_ms={buffered_ms}; correlation_id={correlation_id}",
                 flush=True,
             )
         else:
@@ -247,43 +230,38 @@ async def main() -> None:
     connection = await connect_broker()
     async with connection:
         channel = await connection.channel()
-        await channel.set_qos(prefetch_count=1)
+        await channel.set_qos(prefetch_count=32)
 
         incoming_queue = await channel.declare_queue(AUDIO_INCOMING_QUEUE, durable=True)
         await channel.declare_queue(TEXT_LLM_QUEUE, durable=True)
 
-        print(f"[ASR] Listening to {AUDIO_INCOMING_QUEUE}...", flush=True)
+        print(
+            f"[ASR] Listening to {AUDIO_INCOMING_QUEUE} as {SAMPLE_RATE} Hz mono PCM16 "
+            f"({VAD_FRAME_MS}ms VAD frames)...",
+            flush=True,
+        )
 
         async with incoming_queue.iterator() as queue_iter:
             async for message in queue_iter:
                 try:
                     correlation_id = message.correlation_id
                     if not correlation_id:
-                        print("[ASR] Received audio chunk without correlation_id", flush=True)
+                        print("[ASR] Received audio without correlation_id", flush=True)
 
                     session_key = correlation_id or "__manual_smoke_test__"
                     session = sessions.setdefault(session_key, SessionAudioBuffer())
+                    cancel_flush_task(session)
 
-                    try:
-                        pcm16 = append_and_decode_new_pcm(session, message.body)
-                    except Exception as exc:
+                    pcm16 = pcm16_from_message(message.body)
+                    update_vad_state(session, vad, pcm16)
+
+                    if session.received_frames <= 3:
                         print(
-                            f"[ASR] Waiting for decodable WebM stream data after {len(session.webm_chunks)} chunks: "
-                            f"{exc}; correlation_id={correlation_id}",
+                            f"[ASR] Received PCM samples={pcm16.size}; bytes={len(message.body)}; "
+                            f"correlation_id={correlation_id}",
                             flush=True,
                         )
-                        await message.ack()
-                        continue
 
-                    update_vad_state(session, vad, pcm16)
-                    print(
-                        f"[ASR] Decoded {len(message.body)} WebM bytes -> {pcm16.size} new samples; "
-                        f"speech_ms={session.speech_ms}; silence_ms={session.trailing_silence_ms}; "
-                        f"correlation_id={correlation_id}",
-                        flush=True,
-                    )
-
-                    cancel_flush_task(session)
                     if should_flush(session):
                         await flush_session(channel, model, session, correlation_id, "vad")
                     elif session.speech_started:
