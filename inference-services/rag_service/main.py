@@ -27,7 +27,7 @@ TEXT_LLM_QUEUE = "text.llm.processing"
 
 EMBEDDING_MODEL_NAME = os.getenv("RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
-RAG_MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.20"))
+RAG_MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.30"))
 SEED_CHUNKS_PATH = Path(os.getenv("RAG_SEED_CHUNKS_PATH", "/app/seed_chunks.json"))
 
 
@@ -210,8 +210,6 @@ async def retrieve_context(pool: asyncpg.Pool, embedding: List[float]) -> str:
     top_scores = ", ".join(f"{row['source']}={float(row['similarity']):.3f}" for row in rows)
     print(f"[RAG] Retrieval scores: {top_scores or 'none'}", flush=True)
     useful_rows = [row for row in rows if float(row["similarity"]) >= RAG_MIN_SIMILARITY]
-    if rows and not useful_rows:
-        useful_rows = list(rows)
     return "\n---\n".join(f"[{row['source']}]\n{row['content']}" for row in useful_rows)
 
 

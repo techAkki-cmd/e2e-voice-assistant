@@ -53,7 +53,8 @@ ASR_TRANSCRIPT_REPLACEMENTS = os.getenv(
     (
         "Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;"
         "L&M=LLM;L and M=LLM;L.N.=LLM;"
-        "GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;geo needs=GPU needs;geo instance=GPU instance"
+        "GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;4GPU=What GPU;"
+        "geo needs=GPU needs;geo instance=GPU instance"
     ),
 )
 
