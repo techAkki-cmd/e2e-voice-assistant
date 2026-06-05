@@ -81,6 +81,21 @@ NAME_PATTERNS = [
         r"\bi'm\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|i\s+need|i\s+want|please|can|could)\b)",
     ]
 ]
+DIRECT_GIRLFRIEND_NAME_QUESTION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bwhat(?:'s| is)\s+my\s+girlfriend(?:'s|s)?\s+name\b",
+        r"\btell\s+me\s+my\s+girlfriend(?:'s|s)?\s+name\b",
+        r"\b(?:do\s+you\s+)?remember\s+my\s+girlfriend(?:'s|s)?\s+name\b",
+    ]
+]
+GIRLFRIEND_NAME_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bmy\s+girlfriend(?:'s|s)?\s+name\s+is\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|please|can|could)\b)",
+        r"\bher\s+name\s+is\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|please|can|could)\b)",
+    ]
+]
 REJECTED_NAME_VALUES = {
     "asking",
     "checking",
@@ -315,6 +330,10 @@ def is_direct_name_question(user_text: str) -> bool:
     return any(pattern.search(user_text) for pattern in DIRECT_NAME_QUESTION_PATTERNS)
 
 
+def is_direct_girlfriend_name_question(user_text: str) -> bool:
+    return any(pattern.search(user_text) for pattern in DIRECT_GIRLFRIEND_NAME_QUESTION_PATTERNS)
+
+
 def extract_latest_user_name(history: List[dict], current_transcript: str) -> str | None:
     latest_name = None
     user_texts = [item["content"] for item in history if item.get("role") == "user"]
@@ -322,6 +341,21 @@ def extract_latest_user_name(history: List[dict], current_transcript: str) -> st
 
     for text in user_texts:
         for pattern in NAME_PATTERNS:
+            for match in pattern.finditer(text):
+                name = normalize_name(match.group(1))
+                if name:
+                    latest_name = name
+
+    return latest_name
+
+
+def extract_latest_girlfriend_name(history: List[dict], current_transcript: str) -> str | None:
+    latest_name = None
+    user_texts = [item["content"] for item in history if item.get("role") == "user"]
+    user_texts.append(current_transcript)
+
+    for text in user_texts:
+        for pattern in GIRLFRIEND_NAME_PATTERNS:
             for match in pattern.finditer(text):
                 name = normalize_name(match.group(1))
                 if name:
@@ -456,8 +490,35 @@ async def main() -> None:
 
                             response_id = uuid.uuid4().hex
                             remembered_name = extract_latest_user_name(history, user_text)
+                            remembered_girlfriend_name = extract_latest_girlfriend_name(history, user_text)
                             if is_direct_name_question(user_text) and remembered_name:
                                 assistant_text = f"Your name is {remembered_name}."
+                                await publish_text_chunk(
+                                    channel,
+                                    assistant_text,
+                                    correlation_id,
+                                    traceparent,
+                                    response_id,
+                                )
+                                await save_history(
+                                    redis_client,
+                                    user_id,
+                                    [
+                                        *history,
+                                        {"role": "user", "content": user_text},
+                                        {"role": "assistant", "content": assistant_text},
+                                    ],
+                                )
+                                print(
+                                    f"[LLM] Published direct memory answer: {assistant_text!r}; "
+                                    f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
+                                    flush=True,
+                                )
+                                cleanup_interrupted_state(interrupted_at)
+                                await message.ack()
+                                continue
+                            if is_direct_girlfriend_name_question(user_text) and remembered_girlfriend_name:
+                                assistant_text = f"Your girlfriend's name is {remembered_girlfriend_name}."
                                 await publish_text_chunk(
                                     channel,
                                     assistant_text,

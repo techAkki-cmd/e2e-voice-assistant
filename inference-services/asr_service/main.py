@@ -28,7 +28,7 @@ VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "3"))
 SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "650"))
 MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "900"))
 MAX_UTTERANCE_MS = int(os.getenv("ASR_MAX_UTTERANCE_MS", "12000"))
-INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "1.0"))
+INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "1.8"))
 ENERGY_SILENCE_THRESHOLD = float(os.getenv("ASR_ENERGY_SILENCE_THRESHOLD", "420"))
 ASR_MIN_TRANSCRIPT_CHARS = int(os.getenv("ASR_MIN_TRANSCRIPT_CHARS", "6"))
 ASR_MIN_TRANSCRIPT_WORDS = int(os.getenv("ASR_MIN_TRANSCRIPT_WORDS", "2"))
@@ -36,8 +36,9 @@ ASR_MAX_NO_SPEECH_PROB = float(os.getenv("ASR_MAX_NO_SPEECH_PROB", "0.55"))
 ASR_MIN_AVG_LOGPROB = float(os.getenv("ASR_MIN_AVG_LOGPROB", "-0.85"))
 ASR_MAX_COMPRESSION_RATIO = float(os.getenv("ASR_MAX_COMPRESSION_RATIO", "2.6"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
-ASR_TURN_MERGE_SECONDS = float(os.getenv("ASR_TURN_MERGE_SECONDS", "1.8"))
-ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS = float(os.getenv("ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS", "1.8"))
+ASR_TURN_MERGE_SECONDS = float(os.getenv("ASR_TURN_MERGE_SECONDS", "2.2"))
+ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS = float(os.getenv("ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS", "2.2"))
+ASR_INCOMPLETE_TURN_FLUSH_SECONDS = float(os.getenv("ASR_INCOMPLETE_TURN_FLUSH_SECONDS", "3.2"))
 ASR_INITIAL_PROMPT = os.getenv(
     "ASR_INITIAL_PROMPT",
     (
@@ -93,6 +94,15 @@ def load_transcript_replacements() -> list[tuple[re.Pattern, str]]:
 
 
 TRANSCRIPT_REPLACEMENTS = load_transcript_replacements()
+INCOMPLETE_TURN_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\b(?:please\s+)?tell\s+me\s+(?:what|about|which|how|why|when|where|whether)\s*$",
+        r"\b(?:i\s+want|i\s+wanted|i\s+need|i\s+would\s+like)\s+to\s+(?:know|ask|understand|learn)\s*(?:about|what|which|how|why|when|where)?\s*$",
+        r"\b(?:can\s+you|could\s+you|would\s+you|please)\s+(?:tell|explain|show|help)\s*(?:me)?\s*(?:about|what|which|how|why|when|where)?\s*$",
+        r"\b(?:what|which|how|why|when|where|whether|if)\s*$",
+    ]
+]
 
 
 @dataclass
@@ -309,9 +319,18 @@ def merged_text_from_fragments(fragments: List[str]) -> str:
 
 
 def transcript_flush_delay(transcript: str) -> float:
+    if is_incomplete_turn(transcript):
+        return max(ASR_TURN_MERGE_SECONDS, ASR_INCOMPLETE_TURN_FLUSH_SECONDS)
     if transcript.rstrip().endswith((".", "?", "!")):
         return ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS
     return ASR_TURN_MERGE_SECONDS
+
+
+def is_incomplete_turn(transcript: str) -> bool:
+    normalized = " ".join(transcript.strip().split()).strip(" .,!?:;")
+    if not normalized:
+        return False
+    return any(pattern.search(normalized) for pattern in INCOMPLETE_TURN_PATTERNS)
 
 
 def cancel_transcript_publish_task(session: SessionAudioBuffer) -> None:
