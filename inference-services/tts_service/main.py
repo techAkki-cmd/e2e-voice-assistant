@@ -28,7 +28,8 @@ TTS_SPEED = float(os.getenv("TTS_SPEED", "1.05"))
 TTS_OUTPUT_SAMPLE_RATE = int(os.getenv("TTS_OUTPUT_SAMPLE_RATE", "44100"))
 TTS_INACTIVITY_FLUSH_SECONDS = float(os.getenv("TTS_INACTIVITY_FLUSH_SECONDS", "0.6"))
 TTS_SESSION_TTL_SECONDS = float(os.getenv("TTS_SESSION_TTL_SECONDS", "120"))
-INTERRUPT_DRAIN_SECONDS = float(os.getenv("TTS_INTERRUPT_DRAIN_SECONDS", "0.8"))
+INTERRUPT_DRAIN_SECONDS = float(os.getenv("TTS_INTERRUPT_DRAIN_SECONDS", "2.0"))
+KILLED_RESPONSE_TTL_SECONDS = float(os.getenv("TTS_KILLED_RESPONSE_TTL_SECONDS", "120"))
 TTS_WARMUP_ENABLED = os.getenv("TTS_WARMUP_ENABLED", "true").lower() == "true"
 TTS_SOFT_CLAUSE_WORDS = int(os.getenv("TTS_SOFT_CLAUSE_WORDS", "8"))
 TTS_SOFT_CLAUSE_CHARS = int(os.getenv("TTS_SOFT_CLAUSE_CHARS", "48"))
@@ -39,6 +40,8 @@ WORD_PATTERN = re.compile(r"\S+")
 @dataclass
 class TextBuffer:
     text: str = ""
+    response_id: str | None = None
+    traceparent: str | None = None
     last_seen_monotonic: float = field(default_factory=time.monotonic)
     flush_task: asyncio.Task | None = None
 
@@ -117,6 +120,10 @@ def is_interrupted(session_key: str, interrupted_at: Dict[str, float]) -> bool:
     return interrupted_time is not None and time.monotonic() - interrupted_time <= INTERRUPT_DRAIN_SECONDS
 
 
+def is_killed_response(response_id: str | None, killed_responses: Dict[str, float]) -> bool:
+    return bool(response_id and response_id in killed_responses)
+
+
 def header_as_text(headers: dict | None, name: str) -> str | None:
     if not headers:
         return None
@@ -135,6 +142,10 @@ def trace_headers(correlation_id: str | None, traceparent: str | None) -> dict:
     if correlation_id:
         headers["user_id"] = correlation_id
     return headers
+
+
+def response_id_from_headers(headers: dict | None) -> str | None:
+    return header_as_text(headers, "response_id")
 
 
 def pop_ready_clause(text: str) -> tuple[str | None, str]:
@@ -183,18 +194,24 @@ async def synthesize_and_publish(
     traceparent: str | None,
     interrupted_at: Dict[str, float],
     interrupt_versions: Dict[str, int],
+    killed_responses: Dict[str, float],
+    response_id: str | None,
 ) -> None:
     clause = " ".join(clause.split())
     if not clause:
         return
-    if is_interrupted(session_key, interrupted_at):
+    if is_interrupted(session_key, interrupted_at) or is_killed_response(response_id, killed_responses):
         print(f"[TTS] Dropping clause before synthesis due to kill correlation_id={correlation_id}", flush=True)
         return
 
     start_version = interrupt_versions.get(session_key, 0)
     pcm_bytes = await asyncio.to_thread(synthesize_clause_to_pcm16, model, speaker_id, sample_rate, clause)
 
-    if interrupt_versions.get(session_key, 0) != start_version or is_interrupted(session_key, interrupted_at):
+    if (
+        interrupt_versions.get(session_key, 0) != start_version
+        or is_interrupted(session_key, interrupted_at)
+        or is_killed_response(response_id, killed_responses)
+    ):
         print(f"[TTS] Dropping synthesized PCM due to kill correlation_id={correlation_id}", flush=True)
         return
 
@@ -217,11 +234,12 @@ async def flush_buffer(
     traceparent: str | None,
     interrupted_at: Dict[str, float],
     interrupt_versions: Dict[str, int],
+    killed_responses: Dict[str, float],
 ) -> None:
     state = buffers.get(session_key)
     if not state or not state.text.strip():
         return
-    if is_interrupted(session_key, interrupted_at):
+    if is_interrupted(session_key, interrupted_at) or is_killed_response(state.response_id, killed_responses):
         state.text = ""
         return
 
@@ -238,6 +256,8 @@ async def flush_buffer(
         traceparent,
         interrupted_at,
         interrupt_versions,
+        killed_responses,
+        state.response_id,
     )
 
 
@@ -252,6 +272,7 @@ async def inactivity_flush_later(
     traceparent: str | None,
     interrupted_at: Dict[str, float],
     interrupt_versions: Dict[str, int],
+    killed_responses: Dict[str, float],
 ) -> None:
     await asyncio.sleep(TTS_INACTIVITY_FLUSH_SECONDS)
     state = buffers.get(session_key)
@@ -267,10 +288,15 @@ async def inactivity_flush_later(
             traceparent,
             interrupted_at,
             interrupt_versions,
+            killed_responses,
         )
 
 
-def cleanup_expired_state(buffers: Dict[str, TextBuffer], interrupted_at: Dict[str, float]) -> None:
+def cleanup_expired_state(
+    buffers: Dict[str, TextBuffer],
+    interrupted_at: Dict[str, float],
+    killed_responses: Dict[str, float],
+) -> None:
     now = time.monotonic()
     for key in [key for key, state in buffers.items() if now - state.last_seen_monotonic > TTS_SESSION_TTL_SECONDS]:
         cancel_flush_task(buffers[key])
@@ -279,12 +305,16 @@ def cleanup_expired_state(buffers: Dict[str, TextBuffer], interrupted_at: Dict[s
     for key in [key for key, seen_at in interrupted_at.items() if now - seen_at > INTERRUPT_DRAIN_SECONDS]:
         interrupted_at.pop(key, None)
 
+    for key in [key for key, seen_at in killed_responses.items() if now - seen_at > KILLED_RESPONSE_TTL_SECONDS]:
+        killed_responses.pop(key, None)
+
 
 async def consume_control_signals(
     channel: aio_pika.Channel,
     buffers: Dict[str, TextBuffer],
     interrupted_at: Dict[str, float],
     interrupt_versions: Dict[str, int],
+    killed_responses: Dict[str, float],
 ) -> None:
     exchange = await channel.declare_exchange(CONTROL_SIGNALS_EXCHANGE, aio_pika.ExchangeType.FANOUT, durable=True)
     queue = await channel.declare_queue(exclusive=True, auto_delete=True)
@@ -312,6 +342,8 @@ async def consume_control_signals(
                 state = buffers.get(correlation_id)
                 if state:
                     cancel_flush_task(state)
+                    if state.response_id:
+                        killed_responses[state.response_id] = time.monotonic()
                     state.text = ""
                 traceparent = header_as_text(message.headers, "traceparent")
                 print(
@@ -326,6 +358,7 @@ async def main() -> None:
     buffers: Dict[str, TextBuffer] = {}
     interrupted_at: Dict[str, float] = {}
     interrupt_versions: Dict[str, int] = {}
+    killed_responses: Dict[str, float] = {}
     connection = await connect_broker()
 
     async with connection:
@@ -334,7 +367,7 @@ async def main() -> None:
 
         control_channel = await connection.channel()
         control_task = asyncio.create_task(
-            consume_control_signals(control_channel, buffers, interrupted_at, interrupt_versions)
+            consume_control_signals(control_channel, buffers, interrupted_at, interrupt_versions, killed_responses)
         )
 
         incoming_queue = await channel.declare_queue(TEXT_TTS_QUEUE, durable=True)
@@ -348,6 +381,7 @@ async def main() -> None:
                     try:
                         correlation_id = message.correlation_id
                         traceparent = header_as_text(message.headers, "traceparent")
+                        response_id = response_id_from_headers(message.headers)
                         if not correlation_id:
                             print("[TTS] Received text chunk without correlation_id", flush=True)
 
@@ -355,21 +389,30 @@ async def main() -> None:
                         state = buffers.setdefault(session_key, TextBuffer())
                         cancel_flush_task(state)
 
-                        if is_interrupted(session_key, interrupted_at):
+                        if is_interrupted(session_key, interrupted_at) or is_killed_response(response_id, killed_responses):
                             state.text = ""
                             await message.ack()
                             continue
+
+                        if state.response_id and response_id and state.response_id != response_id:
+                            state.text = ""
+
+                        if response_id:
+                            state.response_id = response_id
+                        state.traceparent = traceparent
 
                         chunk = message.body.decode("utf-8", errors="replace")
                         state.text += chunk
                         state.last_seen_monotonic = time.monotonic()
                         print(
                             f"[TTS] Buffered text chunk: {chunk!r}; "
-                            f"correlation_id={correlation_id}; traceparent={traceparent}",
+                            f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
                             flush=True,
                         )
 
-                        while not is_interrupted(session_key, interrupted_at):
+                        while not is_interrupted(session_key, interrupted_at) and not is_killed_response(
+                            state.response_id, killed_responses
+                        ):
                             clause, remaining_text = pop_ready_clause(state.text)
                             if not clause:
                                 break
@@ -385,9 +428,13 @@ async def main() -> None:
                                 traceparent,
                                 interrupted_at,
                                 interrupt_versions,
+                                killed_responses,
+                                state.response_id,
                             )
 
-                        if is_interrupted(session_key, interrupted_at):
+                        if is_interrupted(session_key, interrupted_at) or is_killed_response(
+                            state.response_id, killed_responses
+                        ):
                             state.text = ""
                         elif state.text.strip():
                             state.flush_task = asyncio.create_task(
@@ -402,10 +449,11 @@ async def main() -> None:
                                     traceparent,
                                     interrupted_at,
                                     interrupt_versions,
+                                    killed_responses,
                                 )
                             )
 
-                        cleanup_expired_state(buffers, interrupted_at)
+                        cleanup_expired_state(buffers, interrupted_at, killed_responses)
                         await message.ack()
                     except Exception as exc:
                         print(f"[TTS] Failed to synthesize text chunk: {exc}", flush=True)

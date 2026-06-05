@@ -23,12 +23,17 @@ ASR_DEVICE = os.getenv("ASR_DEVICE", "cuda")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "float16")
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 VAD_FRAME_MS = int(os.getenv("ASR_VAD_FRAME_MS", "20"))
-VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "2"))
-SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "350"))
-MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "240"))
+VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "3"))
+SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "650"))
+MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "900"))
 MAX_UTTERANCE_MS = int(os.getenv("ASR_MAX_UTTERANCE_MS", "12000"))
-INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "0.6"))
-ENERGY_SILENCE_THRESHOLD = float(os.getenv("ASR_ENERGY_SILENCE_THRESHOLD", "220"))
+INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "1.0"))
+ENERGY_SILENCE_THRESHOLD = float(os.getenv("ASR_ENERGY_SILENCE_THRESHOLD", "420"))
+ASR_MIN_TRANSCRIPT_CHARS = int(os.getenv("ASR_MIN_TRANSCRIPT_CHARS", "6"))
+ASR_MIN_TRANSCRIPT_WORDS = int(os.getenv("ASR_MIN_TRANSCRIPT_WORDS", "2"))
+ASR_MAX_NO_SPEECH_PROB = float(os.getenv("ASR_MAX_NO_SPEECH_PROB", "0.55"))
+ASR_MIN_AVG_LOGPROB = float(os.getenv("ASR_MIN_AVG_LOGPROB", "-0.85"))
+ASR_MAX_COMPRESSION_RATIO = float(os.getenv("ASR_MAX_COMPRESSION_RATIO", "2.6"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
 ASR_INITIAL_PROMPT = os.getenv(
     "ASR_INITIAL_PROMPT",
@@ -37,6 +42,27 @@ ASR_INITIAL_PROMPT = os.getenv(
         "VRAM, cloud instance, inference, deployment, pricing, account, support."
     ),
 )
+
+REJECTED_SHORT_TRANSCRIPTS = {
+    "bye",
+    "goodbye",
+    "hi",
+    "hmm",
+    "no",
+    "okay",
+    "ok",
+    "thanks",
+    "thank you",
+    "yes",
+}
+
+
+@dataclass
+class TranscriptionResult:
+    text: str
+    avg_logprob: float = 0.0
+    max_no_speech_prob: float = 0.0
+    max_compression_ratio: float = 0.0
 
 
 @dataclass
@@ -160,13 +186,13 @@ def trace_headers(correlation_id: str | None, traceparent: str | None) -> dict:
     return headers
 
 
-def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> str:
+def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> TranscriptionResult:
     if not session.pcm_chunks:
-        return ""
+        return TranscriptionResult("")
 
     pcm16 = np.concatenate(session.pcm_chunks)
     if pcm16.size == 0:
-        return ""
+        return TranscriptionResult("")
 
     audio_float32 = pcm16.astype(np.float32) / 32768.0
     segments, _ = model.transcribe(
@@ -180,8 +206,42 @@ def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> str:
         without_timestamps=True,
         temperature=0.0,
     )
-    transcript = " ".join(segment.text.strip() for segment in segments).strip()
-    return " ".join(transcript.split())
+    segment_list = list(segments)
+    transcript = " ".join(segment.text.strip() for segment in segment_list).strip()
+    transcript = " ".join(transcript.split())
+    if not segment_list:
+        return TranscriptionResult(transcript)
+
+    return TranscriptionResult(
+        text=transcript,
+        avg_logprob=sum(float(segment.avg_logprob) for segment in segment_list) / len(segment_list),
+        max_no_speech_prob=max(float(segment.no_speech_prob) for segment in segment_list),
+        max_compression_ratio=max(float(segment.compression_ratio) for segment in segment_list),
+    )
+
+
+def should_publish_transcript(result: TranscriptionResult, buffered_ms: int, speech_ms: int) -> tuple[bool, str | None]:
+    normalized = result.text.strip().lower().strip(" .!?,-")
+    words = [word for word in normalized.split() if word]
+
+    if not normalized:
+        return False, "empty transcript"
+    if len(result.text.strip()) < ASR_MIN_TRANSCRIPT_CHARS:
+        return False, "transcript too short"
+    if len(words) < ASR_MIN_TRANSCRIPT_WORDS and normalized in REJECTED_SHORT_TRANSCRIPTS:
+        return False, "short filler transcript"
+    if speech_ms < MIN_SPEECH_MS:
+        return False, "insufficient speech"
+    if buffered_ms < 1000 and len(words) < 3:
+        return False, "short low-context utterance"
+    if result.max_no_speech_prob > ASR_MAX_NO_SPEECH_PROB:
+        return False, f"no_speech_prob={result.max_no_speech_prob:.2f}"
+    if result.avg_logprob < ASR_MIN_AVG_LOGPROB:
+        return False, f"avg_logprob={result.avg_logprob:.2f}"
+    if result.max_compression_ratio > ASR_MAX_COMPRESSION_RATIO:
+        return False, f"compression_ratio={result.max_compression_ratio:.2f}"
+
+    return True, None
 
 
 async def publish_transcript(
@@ -217,19 +277,26 @@ async def flush_session(
             return
 
         buffered_ms = session.total_audio_ms
-        transcript = await asyncio.to_thread(transcribe_buffer, model, session)
+        speech_ms = session.speech_ms
+        result = await asyncio.to_thread(transcribe_buffer, model, session)
         reset_utterance(session)
 
-        if transcript:
-            await publish_transcript(channel, transcript, correlation_id, traceparent)
+        should_publish, rejection_reason = should_publish_transcript(result, buffered_ms, speech_ms)
+
+        if should_publish:
+            await publish_transcript(channel, result.text, correlation_id, traceparent)
             print(
-                f"[ASR] Published transcript via {reason}: {transcript!r}; "
-                f"buffered_ms={buffered_ms}; correlation_id={correlation_id}; traceparent={traceparent}",
+                f"[ASR] Published transcript via {reason}: {result.text!r}; "
+                f"buffered_ms={buffered_ms}; speech_ms={speech_ms}; "
+                f"avg_logprob={result.avg_logprob:.2f}; no_speech_prob={result.max_no_speech_prob:.2f}; "
+                f"correlation_id={correlation_id}; traceparent={traceparent}",
                 flush=True,
             )
         else:
             print(
-                f"[ASR] Empty transcript after {reason} flush; "
+                f"[ASR] Dropped transcript after {reason} flush: {result.text!r}; "
+                f"reason={rejection_reason}; buffered_ms={buffered_ms}; speech_ms={speech_ms}; "
+                f"avg_logprob={result.avg_logprob:.2f}; no_speech_prob={result.max_no_speech_prob:.2f}; "
                 f"correlation_id={correlation_id}; traceparent={traceparent}",
                 flush=True,
             )

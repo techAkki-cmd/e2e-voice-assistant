@@ -3,6 +3,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from queue import Empty
 from typing import AsyncIterator, Dict, List
 
@@ -55,7 +56,8 @@ SYSTEM_PROMPT = os.getenv(
         "pricing, and exact models can change, so do not invent a live catalog. If asked for exact current "
         "inventory or pricing, say you can explain the types of GPUs and guide the user to check the live "
         "JarvisLabs dashboard. If the transcript looks garbled or off-topic, ask one concise clarification. "
-        "Use the conversation history. Reply in one short sentence when possible."
+        "Use the conversation history. Reply in one short sentence when possible. Do not say goodbye unless "
+        "the user clearly says goodbye or asks to end the conversation."
     ),
 )
 
@@ -276,12 +278,14 @@ def header_as_text(headers: dict | None, name: str) -> str | None:
     return str(value)
 
 
-def trace_headers(correlation_id: str | None, traceparent: str | None) -> dict:
+def trace_headers(correlation_id: str | None, traceparent: str | None, response_id: str | None = None) -> dict:
     headers = {}
     if traceparent:
         headers["traceparent"] = traceparent
     if correlation_id:
         headers["user_id"] = correlation_id
+    if response_id:
+        headers["response_id"] = response_id
     return headers
 
 
@@ -290,6 +294,7 @@ async def publish_text_chunk(
     chunk: str,
     correlation_id: str | None,
     traceparent: str | None,
+    response_id: str,
 ) -> None:
     await channel.default_exchange.publish(
         aio_pika.Message(
@@ -297,7 +302,7 @@ async def publish_text_chunk(
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             correlation_id=correlation_id,
             content_type="text/plain",
-            headers=trace_headers(correlation_id, traceparent),
+            headers=trace_headers(correlation_id, traceparent, response_id),
         ),
         routing_key=TEXT_TTS_QUEUE,
     )
@@ -384,15 +389,16 @@ async def main() -> None:
                             if correlation_id:
                                 active_generations[correlation_id] = stop_event
 
+                            response_id = uuid.uuid4().hex
                             assistant_chunks = []
                             async for chunk in stream_response_chunks(tokenizer, model, history, user_text, stop_event):
                                 if stop_event.is_set():
                                     break
                                 assistant_chunks.append(chunk)
-                                await publish_text_chunk(channel, chunk, correlation_id, traceparent)
+                                await publish_text_chunk(channel, chunk, correlation_id, traceparent, response_id)
                                 print(
                                     f"[LLM] Published chunk: {chunk!r}; "
-                                    f"correlation_id={correlation_id}; traceparent={traceparent}",
+                                    f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
                                     flush=True,
                                 )
 
