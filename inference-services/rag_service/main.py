@@ -132,10 +132,20 @@ def chunk_hash(source: str, content: str) -> str:
 
 async def seed_if_empty(pool: asyncpg.Pool, model: SentenceTransformer) -> None:
     async with pool.acquire() as connection:
-        count = await connection.fetchval("SELECT count(*) FROM rag_chunks")
-    if count:
-        print(f"[RAG] Seed skipped; rag_chunks already has {count} rows", flush=True)
+        total_count = await connection.fetchval("SELECT count(*) FROM rag_chunks")
+        embedded_count = await connection.fetchval("SELECT count(*) FROM rag_chunks WHERE embedding IS NOT NULL")
+    if embedded_count:
+        print(
+            f"[RAG] Seed skipped; rag_chunks has rows={total_count}, embedded_rows={embedded_count}",
+            flush=True,
+        )
         return
+
+    if total_count:
+        print(
+            f"[RAG] Found rag_chunks rows={total_count} but embedded_rows=0; inserting embedded seed chunks",
+            flush=True,
+        )
 
     seed_chunks = json.loads(SEED_CHUNKS_PATH.read_text(encoding="utf-8"))
     contents = [chunk["content"] for chunk in seed_chunks]
