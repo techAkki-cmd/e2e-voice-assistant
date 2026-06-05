@@ -102,7 +102,6 @@ services:
         condition: service_healthy
     volumes:
       - model-cache:/models
-      - ./rag-docs:/data/rag-docs:ro
     networks:
       - e2e-network
 
@@ -133,6 +132,7 @@ services:
         condition: service_healthy
     volumes:
       - model-cache:/models
+      - ./rag-docs:/data/rag-docs:ro
     networks:
       - e2e-network
 
