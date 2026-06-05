@@ -17,6 +17,12 @@ public class AudioResponseListener {
     @RabbitListener(queues = AUDIO_OUTGOING_STREAM_QUEUE)
     public void onAudioResponse(Message message) {
         String correlationId = message.getMessageProperties().getCorrelationId();
+        Object traceparent = message.getMessageProperties().getHeaders().get("traceparent");
+        LOGGER.debug(
+                "Routing outbound audio correlation_id={} traceparent={}",
+                correlationId,
+                traceparent
+        );
 
         boolean routed = AudioStreamHandler.sendAudioToSession(correlationId, message.getBody());
         if (!routed) {

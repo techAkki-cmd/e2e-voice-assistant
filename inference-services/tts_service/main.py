@@ -117,6 +117,26 @@ def is_interrupted(session_key: str, interrupted_at: Dict[str, float]) -> bool:
     return interrupted_time is not None and time.monotonic() - interrupted_time <= INTERRUPT_DRAIN_SECONDS
 
 
+def header_as_text(headers: dict | None, name: str) -> str | None:
+    if not headers:
+        return None
+    value = headers.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def trace_headers(correlation_id: str | None, traceparent: str | None) -> dict:
+    headers = {}
+    if traceparent:
+        headers["traceparent"] = traceparent
+    if correlation_id:
+        headers["user_id"] = correlation_id
+    return headers
+
+
 def pop_ready_clause(text: str) -> tuple[str | None, str]:
     match = CLAUSE_PATTERN.match(text)
     if match:
@@ -134,13 +154,19 @@ def pop_ready_clause(text: str) -> tuple[str | None, str]:
     return clause, text[:leading_whitespace] + remainder
 
 
-async def publish_pcm(channel: aio_pika.Channel, pcm_bytes: bytes, correlation_id: str | None) -> None:
+async def publish_pcm(
+    channel: aio_pika.Channel,
+    pcm_bytes: bytes,
+    correlation_id: str | None,
+    traceparent: str | None,
+) -> None:
     await channel.default_exchange.publish(
         aio_pika.Message(
             pcm_bytes,
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             correlation_id=correlation_id,
             content_type=f"audio/pcm;rate={TTS_OUTPUT_SAMPLE_RATE}",
+            headers=trace_headers(correlation_id, traceparent),
         ),
         routing_key=AUDIO_OUTGOING_QUEUE,
     )
@@ -154,6 +180,7 @@ async def synthesize_and_publish(
     clause: str,
     session_key: str,
     correlation_id: str | None,
+    traceparent: str | None,
     interrupted_at: Dict[str, float],
     interrupt_versions: Dict[str, int],
 ) -> None:
@@ -171,9 +198,10 @@ async def synthesize_and_publish(
         print(f"[TTS] Dropping synthesized PCM due to kill correlation_id={correlation_id}", flush=True)
         return
 
-    await publish_pcm(channel, pcm_bytes, correlation_id)
+    await publish_pcm(channel, pcm_bytes, correlation_id, traceparent)
     print(
-        f"[TTS] Published PCM bytes={len(pcm_bytes)} for clause={clause!r}; correlation_id={correlation_id}",
+        f"[TTS] Published PCM bytes={len(pcm_bytes)} for clause={clause!r}; "
+        f"correlation_id={correlation_id}; traceparent={traceparent}",
         flush=True,
     )
 
@@ -186,6 +214,7 @@ async def flush_buffer(
     buffers: Dict[str, TextBuffer],
     session_key: str,
     correlation_id: str | None,
+    traceparent: str | None,
     interrupted_at: Dict[str, float],
     interrupt_versions: Dict[str, int],
 ) -> None:
@@ -206,6 +235,7 @@ async def flush_buffer(
         clause,
         session_key,
         correlation_id,
+        traceparent,
         interrupted_at,
         interrupt_versions,
     )
@@ -219,6 +249,7 @@ async def inactivity_flush_later(
     buffers: Dict[str, TextBuffer],
     session_key: str,
     correlation_id: str | None,
+    traceparent: str | None,
     interrupted_at: Dict[str, float],
     interrupt_versions: Dict[str, int],
 ) -> None:
@@ -233,6 +264,7 @@ async def inactivity_flush_later(
             buffers,
             session_key,
             correlation_id,
+            traceparent,
             interrupted_at,
             interrupt_versions,
         )
@@ -281,7 +313,12 @@ async def consume_control_signals(
                 if state:
                     cancel_flush_task(state)
                     state.text = ""
-                print(f"[TTS] Kill signal received; cleared buffer correlation_id={correlation_id}", flush=True)
+                traceparent = header_as_text(message.headers, "traceparent")
+                print(
+                    f"[TTS] Kill signal received; cleared buffer "
+                    f"correlation_id={correlation_id}; traceparent={traceparent}",
+                    flush=True,
+                )
 
 
 async def main() -> None:
@@ -310,6 +347,7 @@ async def main() -> None:
                 async for message in queue_iter:
                     try:
                         correlation_id = message.correlation_id
+                        traceparent = header_as_text(message.headers, "traceparent")
                         if not correlation_id:
                             print("[TTS] Received text chunk without correlation_id", flush=True)
 
@@ -325,7 +363,11 @@ async def main() -> None:
                         chunk = message.body.decode("utf-8", errors="replace")
                         state.text += chunk
                         state.last_seen_monotonic = time.monotonic()
-                        print(f"[TTS] Buffered text chunk: {chunk!r}; correlation_id={correlation_id}", flush=True)
+                        print(
+                            f"[TTS] Buffered text chunk: {chunk!r}; "
+                            f"correlation_id={correlation_id}; traceparent={traceparent}",
+                            flush=True,
+                        )
 
                         while not is_interrupted(session_key, interrupted_at):
                             clause, remaining_text = pop_ready_clause(state.text)
@@ -340,6 +382,7 @@ async def main() -> None:
                                 clause,
                                 session_key,
                                 correlation_id,
+                                traceparent,
                                 interrupted_at,
                                 interrupt_versions,
                             )
@@ -356,6 +399,7 @@ async def main() -> None:
                                     buffers,
                                     session_key,
                                     correlation_id,
+                                    traceparent,
                                     interrupted_at,
                                     interrupt_versions,
                                 )

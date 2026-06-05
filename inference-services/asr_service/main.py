@@ -140,6 +140,26 @@ def reset_utterance(session: SessionAudioBuffer) -> None:
     session.last_seen_monotonic = time.monotonic()
 
 
+def header_as_text(headers: dict | None, name: str) -> str | None:
+    if not headers:
+        return None
+    value = headers.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def trace_headers(correlation_id: str | None, traceparent: str | None) -> dict:
+    headers = {}
+    if traceparent:
+        headers["traceparent"] = traceparent
+    if correlation_id:
+        headers["user_id"] = correlation_id
+    return headers
+
+
 def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> str:
     if not session.pcm_chunks:
         return ""
@@ -164,13 +184,19 @@ def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> str:
     return " ".join(transcript.split())
 
 
-async def publish_transcript(channel: aio_pika.Channel, transcript: str, correlation_id: str | None) -> None:
+async def publish_transcript(
+    channel: aio_pika.Channel,
+    transcript: str,
+    correlation_id: str | None,
+    traceparent: str | None,
+) -> None:
     await channel.default_exchange.publish(
         aio_pika.Message(
             transcript.encode("utf-8"),
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             correlation_id=correlation_id,
             content_type="text/plain",
+            headers=trace_headers(correlation_id, traceparent),
         ),
         routing_key=TEXT_LLM_QUEUE,
     )
@@ -181,6 +207,7 @@ async def flush_session(
     model: WhisperModel,
     session: SessionAudioBuffer,
     correlation_id: str | None,
+    traceparent: str | None,
     reason: str,
 ) -> None:
     async with session.flush_lock:
@@ -194,14 +221,18 @@ async def flush_session(
         reset_utterance(session)
 
         if transcript:
-            await publish_transcript(channel, transcript, correlation_id)
+            await publish_transcript(channel, transcript, correlation_id, traceparent)
             print(
                 f"[ASR] Published transcript via {reason}: {transcript!r}; "
-                f"buffered_ms={buffered_ms}; correlation_id={correlation_id}",
+                f"buffered_ms={buffered_ms}; correlation_id={correlation_id}; traceparent={traceparent}",
                 flush=True,
             )
         else:
-            print(f"[ASR] Empty transcript after {reason} flush; correlation_id={correlation_id}", flush=True)
+            print(
+                f"[ASR] Empty transcript after {reason} flush; "
+                f"correlation_id={correlation_id}; traceparent={traceparent}",
+                flush=True,
+            )
 
 
 async def inactivity_flush_later(
@@ -209,10 +240,11 @@ async def inactivity_flush_later(
     model: WhisperModel,
     session: SessionAudioBuffer,
     correlation_id: str | None,
+    traceparent: str | None,
 ) -> None:
     await asyncio.sleep(INACTIVITY_FLUSH_SECONDS)
     if time.monotonic() - session.last_seen_monotonic >= INACTIVITY_FLUSH_SECONDS:
-        await flush_session(channel, model, session, correlation_id, "inactivity")
+        await flush_session(channel, model, session, correlation_id, traceparent, "inactivity")
 
 
 def cancel_flush_task(session: SessionAudioBuffer) -> None:
@@ -253,6 +285,7 @@ async def main() -> None:
             async for message in queue_iter:
                 try:
                     correlation_id = message.correlation_id
+                    traceparent = header_as_text(message.headers, "traceparent")
                     if not correlation_id:
                         print("[ASR] Received audio without correlation_id", flush=True)
 
@@ -266,15 +299,15 @@ async def main() -> None:
                     if session.received_frames <= 3:
                         print(
                             f"[ASR] Received PCM samples={pcm16.size}; bytes={len(message.body)}; "
-                            f"correlation_id={correlation_id}",
+                            f"correlation_id={correlation_id}; traceparent={traceparent}",
                             flush=True,
                         )
 
                     if should_flush(session):
-                        await flush_session(channel, model, session, correlation_id, "vad")
+                        await flush_session(channel, model, session, correlation_id, traceparent, "vad")
                     elif session.speech_started:
                         session.flush_task = asyncio.create_task(
-                            inactivity_flush_later(channel, model, session, correlation_id)
+                            inactivity_flush_later(channel, model, session, correlation_id, traceparent)
                         )
 
                     cleanup_expired_sessions(sessions)

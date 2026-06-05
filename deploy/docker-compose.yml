@@ -11,6 +11,22 @@ services:
     networks:
       - e2e-network
 
+  redis:
+    image: redis:7-alpine
+    container_name: e2e-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - e2e-network
+
   orchestrator:
     build: ../orchestrator-backend
     container_name: e2e-orchestrator
@@ -44,10 +60,16 @@ services:
     gpus: all
     environment:
       - HF_HOME=/models/huggingface
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LLM_HISTORY_TTL_SECONDS=86400
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:
-      - rabbitmq
+      rabbitmq:
+        condition: service_started
+      redis:
+        condition: service_healthy
     volumes:
       - model-cache:/models
     networks:
@@ -74,3 +96,4 @@ networks:
 
 volumes:
   model-cache:
+  redis-data:
