@@ -73,6 +73,13 @@ DIRECT_NAME_QUESTION_PATTERNS = [
         r"\b(?:can\s+you|could\s+you|please)\s+tell\s+me\s+my\s+name\b",
     ]
 ]
+DIRECT_GREETING_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"^\s*(?:hi|hello|hey)\s+(?:jarvis|jarvislabs)\s*[.!?]*\s*$",
+        r"^\s*(?:hi|hello|hey)\s*[.!?]*\s*$",
+    ]
+]
 NAME_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
@@ -330,6 +337,10 @@ def is_direct_name_question(user_text: str) -> bool:
     return any(pattern.search(user_text) for pattern in DIRECT_NAME_QUESTION_PATTERNS)
 
 
+def is_direct_greeting(user_text: str) -> bool:
+    return any(pattern.match(user_text) for pattern in DIRECT_GREETING_PATTERNS)
+
+
 def is_direct_girlfriend_name_question(user_text: str) -> bool:
     return any(pattern.search(user_text) for pattern in DIRECT_GIRLFRIEND_NAME_QUESTION_PATTERNS)
 
@@ -491,6 +502,32 @@ async def main() -> None:
                             response_id = uuid.uuid4().hex
                             remembered_name = extract_latest_user_name(history, user_text)
                             remembered_girlfriend_name = extract_latest_girlfriend_name(history, user_text)
+                            if is_direct_greeting(user_text):
+                                assistant_text = f"Hello {remembered_name}." if remembered_name else "Hello."
+                                await publish_text_chunk(
+                                    channel,
+                                    assistant_text,
+                                    correlation_id,
+                                    traceparent,
+                                    response_id,
+                                )
+                                await save_history(
+                                    redis_client,
+                                    user_id,
+                                    [
+                                        *history,
+                                        {"role": "user", "content": user_text},
+                                        {"role": "assistant", "content": assistant_text},
+                                    ],
+                                )
+                                print(
+                                    f"[LLM] Published direct greeting: {assistant_text!r}; "
+                                    f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
+                                    flush=True,
+                                )
+                                cleanup_interrupted_state(interrupted_at)
+                                await message.ack()
+                                continue
                             if is_direct_name_question(user_text) and remembered_name:
                                 assistant_text = f"Your name is {remembered_name}."
                                 await publish_text_chunk(
