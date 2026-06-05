@@ -1,0 +1,22 @@
+[
+  {
+    "source": "jarvislabs-platform-overview",
+    "content": "JarvisLabs provides cloud GPU compute for AI and machine learning workloads, including notebook-driven experiments, model training, inference, and deployment workflows."
+  },
+  {
+    "source": "jarvislabs-dashboard-and-access",
+    "content": "The JarvisLabs dashboard is the graphical user interface for creating and managing GPU instances. Users can also work through Jupyter Notebook, terminal access, SSH, and deployment controls depending on the instance setup."
+  },
+  {
+    "source": "gpu-guidance-small-llm",
+    "content": "For a small LLM project, start with an NVIDIA L4 when the workload is lightweight or cost-sensitive. Use A100 or H100 for larger models, higher throughput, heavier training, or demanding inference workloads."
+  },
+  {
+    "source": "live-inventory-caveat",
+    "content": "GPU availability, exact pricing, and live inventory can change. For current GPU stock, pricing, and regional availability, users should check the live JarvisLabs dashboard rather than relying on a static assistant answer."
+  },
+  {
+    "source": "deployment-support-scope",
+    "content": "JarvisLabs support topics include GPU instances, CUDA and PyTorch setup, model deployment, billing and account help, SSH access, persistent storage, containers, and troubleshooting inference workloads."
+  }
+]

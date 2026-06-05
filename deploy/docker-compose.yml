@@ -27,6 +27,26 @@ services:
     networks:
       - e2e-network
 
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: e2e-pgvector
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=voice_rag
+      - POSTGRES_USER=voice
+      - POSTGRES_PASSWORD=voice
+    volumes:
+      - pgvector-data:/var/lib/postgresql/data
+      - ./pgvector-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voice -d voice_rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - e2e-network
+
   orchestrator:
     build: ../orchestrator-backend
     container_name: e2e-orchestrator
@@ -82,6 +102,37 @@ services:
         condition: service_healthy
     volumes:
       - model-cache:/models
+      - ./rag-docs:/data/rag-docs:ro
+    networks:
+      - e2e-network
+
+  rag-service:
+    build: ../inference-services/rag_service
+    container_name: e2e-rag-service
+    gpus: all
+    environment:
+      - HF_HOME=/models/huggingface
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASSWORD=guest
+      - PGVECTOR_HOST=pgvector
+      - PGVECTOR_PORT=5432
+      - PGVECTOR_DB=voice_rag
+      - PGVECTOR_USER=voice
+      - PGVECTOR_PASSWORD=voice
+      - RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      - RAG_TOP_K=3
+      - RAG_MIN_SIMILARITY=0.20
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    depends_on:
+      rabbitmq:
+        condition: service_started
+      pgvector:
+        condition: service_healthy
+    volumes:
+      - model-cache:/models
     networks:
       - e2e-network
 
@@ -107,3 +158,4 @@ networks:
 volumes:
   model-cache:
   redis-data:
+  pgvector-data:

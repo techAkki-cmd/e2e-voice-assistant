@@ -1,0 +1,6 @@
+aio-pika==9.4.3
+asyncpg==0.30.0
+pypdf==5.1.0
+sentence-transformers==3.3.1
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.4.1

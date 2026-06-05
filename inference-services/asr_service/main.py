@@ -17,7 +17,7 @@ RABBITMQ_USER = os.getenv("RABBITMQ_USER", "guest")
 RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
 
 AUDIO_INCOMING_QUEUE = "audio.incoming.raw"
-TEXT_LLM_QUEUE = "text.llm.processing"
+TEXT_RAG_QUEUE = "text.rag.processing"
 
 ASR_MODEL_NAME = os.getenv("ASR_MODEL_NAME", "small.en")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "cuda")
@@ -310,7 +310,7 @@ async def publish_transcript(
             content_type="text/plain",
             headers=trace_headers(correlation_id, traceparent),
         ),
-        routing_key=TEXT_LLM_QUEUE,
+        routing_key=TEXT_RAG_QUEUE,
     )
 
 
@@ -480,7 +480,7 @@ async def main() -> None:
         await channel.set_qos(prefetch_count=32)
 
         incoming_queue = await channel.declare_queue(AUDIO_INCOMING_QUEUE, durable=True)
-        await channel.declare_queue(TEXT_LLM_QUEUE, durable=True)
+        await channel.declare_queue(TEXT_RAG_QUEUE, durable=True)
 
         print(
             f"[ASR] Listening to {AUDIO_INCOMING_QUEUE} as {SAMPLE_RATE} Hz mono PCM16 "

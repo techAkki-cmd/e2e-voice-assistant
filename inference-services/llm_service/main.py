@@ -63,6 +63,15 @@ SYSTEM_PROMPT = os.getenv(
         "Do not say goodbye unless the user clearly says goodbye or asks to end the conversation."
     ),
 )
+RAG_CONTEXT_INSTRUCTIONS = os.getenv(
+    "LLM_RAG_CONTEXT_INSTRUCTIONS",
+    (
+        "Use the retrieved company context below for company/product facts. "
+        "Answer only from that context for JarvisLabs, GPU cloud, deployment, billing, support, or platform questions. "
+        "If the context does not contain the answer, say: I don't know based on the provided company context. "
+        "Do not invent live GPU inventory, pricing, or availability."
+    ),
+)
 
 DIRECT_NAME_QUESTION_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -179,7 +188,7 @@ def load_model():
     model.eval()
     if LLM_WARMUP_ENABLED:
         print("[LLM] Running startup warmup generation...", flush=True)
-        inputs = build_inputs(tokenizer, model, [], "Say ready.")
+        inputs = build_inputs(tokenizer, model, [], "Say ready.", "")
         with torch.inference_mode():
             model.generate(
                 **inputs,
@@ -192,9 +201,41 @@ def load_model():
     return tokenizer, model
 
 
-def build_inputs(tokenizer, model, history: List[dict], user_text: str):
+def build_system_prompt(retrieved_context: str) -> str:
+    context = retrieved_context.strip() or "No relevant company context was retrieved."
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"{RAG_CONTEXT_INSTRUCTIONS}\n\n"
+        f"Retrieved company context:\n{context}"
+    )
+
+
+def parse_rag_payload(body: bytes) -> tuple[str, str]:
+    decoded = body.decode("utf-8", errors="replace").strip()
+    if not decoded:
+        return "", ""
+
+    try:
+        payload = json.loads(decoded)
+    except json.JSONDecodeError:
+        return decoded, ""
+
+    if not isinstance(payload, dict):
+        return decoded, ""
+
+    user_transcript = payload.get("user_transcript")
+    retrieved_context = payload.get("retrieved_context")
+    if not isinstance(user_transcript, str):
+        return decoded, ""
+    if not isinstance(retrieved_context, str):
+        retrieved_context = ""
+
+    return user_transcript.strip(), retrieved_context.strip()
+
+
+def build_inputs(tokenizer, model, history: List[dict], user_text: str, retrieved_context: str):
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": build_system_prompt(retrieved_context)},
         *history,
         {"role": "user", "content": user_text.strip()},
     ]
@@ -220,9 +261,10 @@ async def stream_response_chunks(
     model,
     history: List[dict],
     user_text: str,
+    retrieved_context: str,
     stop_event: threading.Event,
 ) -> AsyncIterator[str]:
-    inputs = build_inputs(tokenizer, model, history, user_text)
+    inputs = build_inputs(tokenizer, model, history, user_text, retrieved_context)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=1.0)
 
     generation_kwargs = {
@@ -489,9 +531,10 @@ async def main() -> None:
                             if not correlation_id:
                                 print("[LLM] Received transcript without correlation_id", flush=True)
 
-                            user_text = message.body.decode("utf-8", errors="replace").strip()
+                            user_text, retrieved_context = parse_rag_payload(message.body)
                             print(
                                 f"[LLM] Received transcript: {user_text!r}; "
+                                f"retrieved_context_chars={len(retrieved_context)}; "
                                 f"correlation_id={correlation_id}; traceparent={traceparent}",
                                 flush=True,
                             )
@@ -587,7 +630,14 @@ async def main() -> None:
                                 active_generations[correlation_id] = stop_event
 
                             assistant_chunks = []
-                            async for chunk in stream_response_chunks(tokenizer, model, history, user_text, stop_event):
+                            async for chunk in stream_response_chunks(
+                                tokenizer,
+                                model,
+                                history,
+                                user_text,
+                                retrieved_context,
+                                stop_event,
+                            ):
                                 if stop_event.is_set():
                                     break
                                 assistant_chunks.append(chunk)
