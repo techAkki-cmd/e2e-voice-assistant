@@ -191,17 +191,21 @@ def forward_headers(correlation_id: str | None, traceparent: str | None, user_id
 
 async def retrieve_context(pool: asyncpg.Pool, embedding: List[float]) -> str:
     async with pool.acquire() as connection:
-        rows = await connection.fetch(
-            """
-            SELECT source, content, 1 - (embedding <=> $1::vector) AS similarity
-            FROM rag_chunks
-            WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> $1::vector
-            LIMIT $2
-            """,
-            vector_literal(embedding),
-            RAG_TOP_K,
-        )
+        async with connection.transaction():
+            # Exact scan avoids IVFFlat returning no candidates on tiny demo datasets.
+            await connection.execute("SET LOCAL enable_indexscan = off")
+            await connection.execute("SET LOCAL enable_bitmapscan = off")
+            rows = await connection.fetch(
+                """
+                SELECT source, content, 1 - (embedding <=> $1::vector) AS similarity
+                FROM rag_chunks
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                vector_literal(embedding),
+                RAG_TOP_K,
+            )
 
     top_scores = ", ".join(f"{row['source']}={float(row['similarity']):.3f}" for row in rows)
     print(f"[RAG] Retrieval scores: {top_scores or 'none'}", flush=True)
