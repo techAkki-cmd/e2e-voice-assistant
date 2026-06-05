@@ -67,8 +67,10 @@ SYSTEM_PROMPT = os.getenv(
 DIRECT_NAME_QUESTION_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
-        r"^\s*(?:what(?:'s| is) my name|tell me my name|do you remember my name)\s*\??\s*$",
-        r"^\s*(?:can you|could you|please)\s+tell me my name\s*\??\s*$",
+        r"\bwhat(?:'s| is)\s+my\s+name\b",
+        r"\btell\s+me\s+my\s+name\b",
+        r"\b(?:do\s+you\s+)?remember\s+my\s+name\b",
+        r"\b(?:can\s+you|could\s+you|please)\s+tell\s+me\s+my\s+name\b",
     ]
 ]
 NAME_PATTERNS = [
@@ -310,7 +312,7 @@ def normalize_name(raw_name: str) -> str | None:
 
 
 def is_direct_name_question(user_text: str) -> bool:
-    return any(pattern.match(user_text) for pattern in DIRECT_NAME_QUESTION_PATTERNS)
+    return any(pattern.search(user_text) for pattern in DIRECT_NAME_QUESTION_PATTERNS)
 
 
 def extract_latest_user_name(history: List[dict], current_transcript: str) -> str | None:

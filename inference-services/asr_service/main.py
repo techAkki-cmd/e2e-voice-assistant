@@ -36,18 +36,24 @@ ASR_MAX_NO_SPEECH_PROB = float(os.getenv("ASR_MAX_NO_SPEECH_PROB", "0.55"))
 ASR_MIN_AVG_LOGPROB = float(os.getenv("ASR_MIN_AVG_LOGPROB", "-0.85"))
 ASR_MAX_COMPRESSION_RATIO = float(os.getenv("ASR_MAX_COMPRESSION_RATIO", "2.6"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
-ASR_TURN_MERGE_SECONDS = float(os.getenv("ASR_TURN_MERGE_SECONDS", "1.2"))
-ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS = float(os.getenv("ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS", "0.45"))
+ASR_TURN_MERGE_SECONDS = float(os.getenv("ASR_TURN_MERGE_SECONDS", "1.8"))
+ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS = float(os.getenv("ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS", "1.8"))
 ASR_INITIAL_PROMPT = os.getenv(
     "ASR_INITIAL_PROMPT",
     (
-        "Arijit, JarvisLabs, E2E Networks, GPU, GPUs, NVIDIA L4, A100, H100, RTX, CUDA, "
-        "VRAM, LLM, small LLM, cloud instance, inference, deployment, pricing, account, support."
+        "Arijit, JarvisLabs, JarvisLabs dashboard, E2E Networks, GPU, GPUs, G P U, GUI, G U I, "
+        "graphical user interface, NVIDIA L4, A100, H100, RTX, CUDA, VRAM, LLM, small LLM, "
+        "Jupyter Notebook, notebook, terminal, instance, cloud instance, inference, deployment, "
+        "pricing, account, support."
     ),
 )
 ASR_TRANSCRIPT_REPLACEMENTS = os.getenv(
     "ASR_TRANSCRIPT_REPLACEMENTS",
-    "Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;L&M=LLM;L and M=LLM;L.N.=LLM",
+    (
+        "Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;"
+        "L&M=LLM;L and M=LLM;L.N.=LLM;"
+        "GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;geo needs=GPU needs;geo instance=GPU instance"
+    ),
 )
 
 REJECTED_SHORT_TRANSCRIPTS = {
