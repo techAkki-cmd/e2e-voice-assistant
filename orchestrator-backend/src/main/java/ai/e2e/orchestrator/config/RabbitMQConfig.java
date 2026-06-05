@@ -19,6 +19,7 @@ public class RabbitMQConfig {
     public static final String AUDIO_INCOMING_RAW_QUEUE = "audio.incoming.raw";
     public static final String AUDIO_OUTGOING_STREAM_QUEUE = "audio.outgoing.stream";
     public static final String TEXT_RAG_PROCESSING_QUEUE = "text.rag.processing";
+    public static final String TEXT_ASR_LIVE_EXCHANGE = "text.asr.live";
     public static final String CONTROL_SIGNALS_EXCHANGE = "control.signals";
 
     @Bean
@@ -34,6 +35,11 @@ public class RabbitMQConfig {
     @Bean
     public Queue textRagProcessingQueue() {
         return new Queue(TEXT_RAG_PROCESSING_QUEUE, true);
+    }
+
+    @Bean
+    public FanoutExchange textAsrLiveExchange() {
+        return new FanoutExchange(TEXT_ASR_LIVE_EXCHANGE, true, false);
     }
 
     @Bean

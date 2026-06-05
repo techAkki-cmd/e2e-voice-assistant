@@ -64,20 +64,20 @@ services:
     container_name: e2e-asr-service
     gpus: all
     environment:
-      - HF_HOME=/models/huggingface
-      - ASR_MODEL_NAME=small.en
-      - ASR_COMPUTE_TYPE=float16
-      - ASR_INACTIVITY_FLUSH_SECONDS=1.8
-      - ASR_TURN_MERGE_SECONDS=2.2
-      - ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS=2.2
-      - ASR_INCOMPLETE_TURN_FLUSH_SECONDS=3.2
-      - ASR_MIN_AVG_LOGPROB=-2.0
-      - ASR_INITIAL_PROMPT=Arijit, JarvisLabs, JarvisLabs dashboard, E2E Networks, GPU, GPUs, G P U, GUI, G U I, graphical user interface, NVIDIA L4, A100, H100, RTX, CUDA, VRAM, LLM, small LLM, Jupyter Notebook, notebook, terminal, instance, cloud instance, inference, deployment, pricing, account, support.
+      - ASR_SHERPA_MODEL_DIR=/models/sherpa-onnx/sherpa-onnx-streaming-zipformer-en-2023-06-26
+      - ASR_SHERPA_ENCODER=encoder-epoch-99-avg-1-chunk-16-left-64.onnx
+      - ASR_SHERPA_DECODER=decoder-epoch-99-avg-1-chunk-16-left-64.onnx
+      - ASR_SHERPA_JOINER=joiner-epoch-99-avg-1-chunk-16-left-64.onnx
+      - ASR_SHERPA_TOKENS=tokens.txt
+      - ASR_SHERPA_PROVIDER=cpu
+      - ASR_SHERPA_NUM_THREADS=2
+      - ASR_SHERPA_RULE1_MIN_TRAILING_SILENCE=2.4
+      - ASR_SHERPA_RULE2_MIN_TRAILING_SILENCE=1.2
+      - ASR_SHERPA_RULE3_MIN_UTTERANCE_LENGTH=20
+      - ASR_PARTIAL_THROTTLE_SECONDS=0.15
       - ASR_TRANSCRIPT_REPLACEMENTS=Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;L&M=LLM;L and M=LLM;L.N.=LLM;GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;4GPU=What GPU;geo needs=GPU needs;geo instance=GPU instance
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    volumes:
-      - model-cache:/models
     depends_on:
       - rabbitmq
     networks:

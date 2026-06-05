@@ -36,6 +36,7 @@ public class AudioStreamHandler implements WebSocketHandler {
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final ConcurrentHashMap<String, WebSocketSession> sessionRegistry = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Sinks.Many<byte[]>> outboundAudioSinks = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, Sinks.Many<String>> outboundTextSinks = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, Long> lastKillSignalAtMillis = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String> sessionTraceparents = new ConcurrentHashMap<>();
 
@@ -49,13 +50,18 @@ public class AudioStreamHandler implements WebSocketHandler {
     public Mono<Void> handle(WebSocketSession session) {
         String userId = resolveUserId(session);
         Sinks.Many<byte[]> outboundAudioSink = Sinks.many().unicast().onBackpressureBuffer();
+        Sinks.Many<String> outboundTextSink = Sinks.many().unicast().onBackpressureBuffer();
         Sinks.Many<byte[]> previousSink = outboundAudioSinks.put(userId, outboundAudioSink);
+        Sinks.Many<String> previousTextSink = outboundTextSinks.put(userId, outboundTextSink);
         sessionRegistry.put(userId, session);
         sessionTraceparents.remove(userId);
 
         if (previousSink != null) {
             previousSink.tryEmitComplete();
             LOGGER.info("Replacing active Audio WebSocket route for user_id={}", userId);
+        }
+        if (previousTextSink != null) {
+            previousTextSink.tryEmitComplete();
         }
 
         Flux<OutboundMessage> audioMessages = session.receive()
@@ -81,16 +87,23 @@ public class AudioStreamHandler implements WebSocketHandler {
                     );
                     return Mono.empty();
                 })
-                .doFinally(signalType -> outboundAudioSink.tryEmitComplete());
+                .doFinally(signalType -> {
+                    outboundAudioSink.tryEmitComplete();
+                    outboundTextSink.tryEmitComplete();
+                });
 
-        Mono<Void> outboundAudio = session.send(
+        Flux<WebSocketMessage> outboundMessages = Flux.merge(
                 outboundAudioSink.asFlux()
-                        .map(audio -> session.binaryMessage(bufferFactory -> bufferFactory.wrap(audio)))
+                        .map(audio -> session.binaryMessage(bufferFactory -> bufferFactory.wrap(audio))),
+                outboundTextSink.asFlux()
+                        .map(session::textMessage)
         );
 
-        return Mono.when(inboundAudio, outboundAudio)
+        Mono<Void> outbound = session.send(outboundMessages);
+
+        return Mono.when(inboundAudio, outbound)
                 .doFinally(signalType -> {
-                    cleanupSession(userId, outboundAudioSink);
+                    cleanupSession(userId, outboundAudioSink, outboundTextSink);
                     LOGGER.debug(
                             "Audio WebSocket route for user_id={} finished with signal {}",
                             userId,
@@ -123,15 +136,45 @@ public class AudioStreamHandler implements WebSocketHandler {
         return true;
     }
 
+    public static boolean sendTextToSession(String correlationId, String payload) {
+        if (correlationId == null || correlationId.isBlank() || payload == null || payload.isBlank()) {
+            LOGGER.debug("Dropping outbound text without correlation ID or payload");
+            return false;
+        }
+
+        WebSocketSession session = sessionRegistry.get(correlationId);
+        Sinks.Many<String> outboundTextSink = outboundTextSinks.get(correlationId);
+
+        if (session == null || outboundTextSink == null || !session.isOpen()) {
+            cleanupSession(correlationId);
+            LOGGER.debug("Dropping outbound text for missing or closed WebSocket session {}", correlationId);
+            return false;
+        }
+
+        Sinks.EmitResult emitResult = outboundTextSink.tryEmitNext(payload);
+        if (emitResult.isFailure()) {
+            LOGGER.debug("Failed to route outbound text to session {}: {}", correlationId, emitResult);
+            return false;
+        }
+
+        return true;
+    }
+
     private static void cleanupSession(String sessionId) {
         sessionRegistry.remove(sessionId);
         outboundAudioSinks.remove(sessionId);
+        outboundTextSinks.remove(sessionId);
         lastKillSignalAtMillis.remove(sessionId);
         sessionTraceparents.remove(sessionId);
     }
 
-    private static void cleanupSession(String userId, Sinks.Many<byte[]> expectedSink) {
-        if (outboundAudioSinks.remove(userId, expectedSink)) {
+    private static void cleanupSession(
+            String userId,
+            Sinks.Many<byte[]> expectedAudioSink,
+            Sinks.Many<String> expectedTextSink
+    ) {
+        outboundTextSinks.remove(userId, expectedTextSink);
+        if (outboundAudioSinks.remove(userId, expectedAudioSink)) {
             sessionRegistry.remove(userId);
             lastKillSignalAtMillis.remove(userId);
             sessionTraceparents.remove(userId);

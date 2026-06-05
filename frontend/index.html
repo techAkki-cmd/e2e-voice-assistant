@@ -155,6 +155,17 @@
             <p id="errorText" class="mt-3 hidden max-w-md text-center text-sm font-medium text-red-300"></p>
           </div>
 
+          <div class="mt-6 rounded-lg border border-cyan-400/20 bg-cyan-950/10 p-3">
+            <div class="mb-2 flex items-center justify-between">
+              <span class="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-cyan-300">
+                <i data-lucide="captions" class="h-4 w-4"></i>
+                Live Transcript
+              </span>
+              <span id="liveTranscriptStatus" class="text-xs text-slate-500">idle</span>
+            </div>
+            <div id="liveTranscript" class="min-h-10 text-sm leading-6 text-slate-200"></div>
+          </div>
+
           <div class="mt-8 rounded-lg border border-slate-800 bg-black/50 p-3 scanline">
             <div class="mb-3 flex items-center justify-between px-1">
               <span class="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
@@ -260,6 +271,8 @@
       networkLog: document.getElementById("networkLog"),
       clearLogButton: document.getElementById("clearLogButton"),
       wsUrlLabel: document.getElementById("wsUrlLabel"),
+      liveTranscript: document.getElementById("liveTranscript"),
+      liveTranscriptStatus: document.getElementById("liveTranscriptStatus"),
     };
 
     const ctx = elements.canvas.getContext("2d");
@@ -394,6 +407,16 @@
       elements.ttfbMetric.textContent = "--";
       elements.bytesSentMetric.textContent = "0";
       elements.bytesReceivedMetric.textContent = "0";
+      clearLiveTranscript();
+    }
+
+    function setLiveTranscript(text) {
+      elements.liveTranscript.textContent = text;
+      elements.liveTranscriptStatus.textContent = text ? "streaming" : "idle";
+    }
+
+    function clearLiveTranscript() {
+      setLiveTranscript("");
     }
 
     function updateByteMetrics() {
@@ -663,7 +686,7 @@
       }
 
       if (!(event.data instanceof ArrayBuffer)) {
-        log("Received non-binary WebSocket message", "warn");
+        handleSocketTextMessage(event.data);
         return;
       }
 
@@ -672,6 +695,7 @@
       app.bytesReceived += payload.byteLength;
       updateByteMetrics();
       log(`Received audio frame (${payload.byteLength} bytes)`, "rx");
+      clearLiveTranscript();
 
       const turnReferenceAt = app.lastSpeechAt || app.turnStartedAt || app.sessionStartedAt;
       if (app.awaitingFirstAudioForTurn && turnReferenceAt) {
@@ -686,6 +710,26 @@
 
       app.playbackQueue.push(payload.slice(0));
       processPlaybackQueue();
+    }
+
+    function handleSocketTextMessage(payload) {
+      if (typeof payload !== "string") {
+        log("Received unsupported WebSocket message", "warn");
+        return;
+      }
+
+      try {
+        const event = JSON.parse(payload);
+        if (event.event === "transcript_partial" && typeof event.text === "string") {
+          setLiveTranscript(event.text);
+          log(`ASR partial: ${event.text}`, "rx");
+          return;
+        }
+      } catch (_) {
+        // Fall through to the warning below.
+      }
+
+      log("Received unrecognized WebSocket text message", "warn");
     }
 
     async function processPlaybackQueue() {
@@ -750,6 +794,7 @@
 
     function interruptAssistantPlayback() {
       log("Barge-in requested; clearing assistant playback queue", "warn");
+      clearLiveTranscript();
       sendBargeInSignal();
       app.playbackGeneration += 1;
       app.playbackQueue = [];
@@ -794,6 +839,7 @@
       app.playbackQueue = [];
       app.playbackInProgress = false;
       app.playbackGeneration += 1;
+      clearLiveTranscript();
       try { app.currentPlaybackSource?.stop(); } catch (_) {}
       app.currentPlaybackSource = null;
 
