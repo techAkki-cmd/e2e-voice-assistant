@@ -182,20 +182,20 @@
         <div class="grid shrink-0 gap-3 sm:grid-cols-2">
           <article class="rounded-lg border border-slate-800 bg-slate-950/75 p-4">
             <div class="flex items-center justify-between text-slate-400">
-              <span class="text-xs font-medium uppercase tracking-[0.16em]">Round-Trip Latency</span>
+              <span class="text-xs font-medium uppercase tracking-[0.16em]">Turn Response Latency</span>
               <i data-lucide="timer" class="h-4 w-4 text-cyan-300"></i>
             </div>
             <p id="latencyMetric" class="mt-4 text-3xl font-semibold text-white">--</p>
-            <p class="mt-1 text-xs text-slate-500">milliseconds</p>
+            <p class="mt-1 text-xs text-slate-500">speech end to latest audio</p>
           </article>
 
           <article class="rounded-lg border border-slate-800 bg-slate-950/75 p-4">
             <div class="flex items-center justify-between text-slate-400">
-              <span class="text-xs font-medium uppercase tracking-[0.16em]">Time to First Byte</span>
+              <span class="text-xs font-medium uppercase tracking-[0.16em]">Speech-End TTFB</span>
               <i data-lucide="zap" class="h-4 w-4 text-amber-300"></i>
             </div>
             <p id="ttfbMetric" class="mt-4 text-3xl font-semibold text-white">--</p>
-            <p class="mt-1 text-xs text-slate-500">milliseconds</p>
+            <p class="mt-1 text-xs text-slate-500">speech end to first audio</p>
           </article>
 
           <article class="rounded-lg border border-slate-800 bg-slate-950/75 p-4">
@@ -239,6 +239,8 @@
     const INPUT_FRAME_MS = 20;
     const INPUT_FRAME_BYTES = 640;
     const OUTPUT_SAMPLE_RATE = 44100;
+    const SPEECH_RMS_THRESHOLD = 550;
+    const SPEECH_END_HOLD_MS = 300;
 
     const elements = {
       micButton: document.getElementById("micButton"),
@@ -282,7 +284,10 @@
       bytesReceived: 0,
       lastSentAt: null,
       sessionStartedAt: null,
-      firstByteReceived: false,
+      turnStartedAt: null,
+      lastSpeechAt: null,
+      turnSpeechActive: false,
+      awaitingFirstAudioForTurn: false,
       visualSpikeUntil: 0,
       lastSuppressedLogAt: 0,
       stopping: false,
@@ -380,7 +385,10 @@
       app.bytesReceived = 0;
       app.lastSentAt = null;
       app.sessionStartedAt = performance.now();
-      app.firstByteReceived = false;
+      app.turnStartedAt = null;
+      app.lastSpeechAt = null;
+      app.turnSpeechActive = false;
+      app.awaitingFirstAudioForTurn = false;
       elements.latencyMetric.textContent = "--";
       elements.ttfbMetric.textContent = "--";
       elements.bytesSentMetric.textContent = "0";
@@ -588,6 +596,7 @@
         return;
       }
 
+      updateSpeechTurnState(frame);
       socket.send(frame);
       app.bytesSent += frame.byteLength;
       app.lastSentAt = performance.now();
@@ -598,6 +607,39 @@
       } else if (app.bytesSent <= INPUT_FRAME_BYTES * 5 || app.bytesSent % (INPUT_FRAME_BYTES * 50) === 0) {
         log(`Sent PCM frame (${frame.byteLength} bytes)`, "tx");
       }
+    }
+
+    function updateSpeechTurnState(frame) {
+      const now = performance.now();
+      const rms = computePcmRms(frame);
+      const isSpeech = rms >= SPEECH_RMS_THRESHOLD;
+
+      if (isSpeech) {
+        if (!app.turnSpeechActive) {
+          app.turnStartedAt = now;
+          app.awaitingFirstAudioForTurn = true;
+        }
+        app.turnSpeechActive = true;
+        app.lastSpeechAt = now;
+        return;
+      }
+
+      if (app.turnSpeechActive && app.lastSpeechAt && now - app.lastSpeechAt >= SPEECH_END_HOLD_MS) {
+        app.turnSpeechActive = false;
+      }
+    }
+
+    function computePcmRms(frame) {
+      const samples = new Int16Array(frame);
+      if (!samples.length) return 0;
+
+      let sumSquares = 0;
+      for (let index = 0; index < samples.length; index += 1) {
+        const sample = samples[index];
+        sumSquares += sample * sample;
+      }
+
+      return Math.sqrt(sumSquares / samples.length);
     }
 
     async function handleSocketMessage(event) {
@@ -616,13 +658,15 @@
       updateByteMetrics();
       log(`Received audio frame (${payload.byteLength} bytes)`, "rx");
 
-      if (!app.firstByteReceived && app.sessionStartedAt) {
-        app.firstByteReceived = true;
-        elements.ttfbMetric.textContent = formatMs(receivedAt - app.sessionStartedAt);
+      const turnReferenceAt = app.lastSpeechAt || app.turnStartedAt || app.sessionStartedAt;
+      if (app.awaitingFirstAudioForTurn && turnReferenceAt) {
+        app.awaitingFirstAudioForTurn = false;
+        elements.ttfbMetric.textContent = formatMs(receivedAt - turnReferenceAt);
+        log(`Speech-end TTFB ${formatMs(receivedAt - turnReferenceAt)} ms`, "ok");
       }
 
-      if (app.lastSentAt) {
-        elements.latencyMetric.textContent = formatMs(receivedAt - app.lastSentAt);
+      if (turnReferenceAt) {
+        elements.latencyMetric.textContent = formatMs(receivedAt - turnReferenceAt);
       }
 
       app.playbackQueue.push(payload.slice(0));

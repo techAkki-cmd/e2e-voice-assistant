@@ -26,11 +26,14 @@ TTS_SPEAKER = os.getenv("TTS_SPEAKER", "EN-US")
 TTS_DEVICE = os.getenv("TTS_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
 TTS_SPEED = float(os.getenv("TTS_SPEED", "1.05"))
 TTS_OUTPUT_SAMPLE_RATE = int(os.getenv("TTS_OUTPUT_SAMPLE_RATE", "44100"))
-TTS_INACTIVITY_FLUSH_SECONDS = float(os.getenv("TTS_INACTIVITY_FLUSH_SECONDS", "1.2"))
+TTS_INACTIVITY_FLUSH_SECONDS = float(os.getenv("TTS_INACTIVITY_FLUSH_SECONDS", "0.6"))
 TTS_SESSION_TTL_SECONDS = float(os.getenv("TTS_SESSION_TTL_SECONDS", "120"))
 INTERRUPT_DRAIN_SECONDS = float(os.getenv("TTS_INTERRUPT_DRAIN_SECONDS", "0.8"))
 TTS_WARMUP_ENABLED = os.getenv("TTS_WARMUP_ENABLED", "true").lower() == "true"
+TTS_SOFT_CLAUSE_WORDS = int(os.getenv("TTS_SOFT_CLAUSE_WORDS", "8"))
+TTS_SOFT_CLAUSE_CHARS = int(os.getenv("TTS_SOFT_CLAUSE_CHARS", "48"))
 CLAUSE_PATTERN = re.compile(r"^(.+?[,.!?])(?:\s+|$)", re.DOTALL)
+WORD_PATTERN = re.compile(r"\S+")
 
 
 @dataclass
@@ -112,6 +115,23 @@ def cancel_flush_task(state: TextBuffer) -> None:
 def is_interrupted(session_key: str, interrupted_at: Dict[str, float]) -> bool:
     interrupted_time = interrupted_at.get(session_key)
     return interrupted_time is not None and time.monotonic() - interrupted_time <= INTERRUPT_DRAIN_SECONDS
+
+
+def pop_ready_clause(text: str) -> tuple[str | None, str]:
+    match = CLAUSE_PATTERN.match(text)
+    if match:
+        return match.group(1).strip(), text[match.end() :]
+
+    stripped = text.lstrip()
+    leading_whitespace = len(text) - len(stripped)
+    words = list(WORD_PATTERN.finditer(stripped))
+    if len(words) < TTS_SOFT_CLAUSE_WORDS or len(stripped) < TTS_SOFT_CLAUSE_CHARS:
+        return None, text
+
+    split_at = words[TTS_SOFT_CLAUSE_WORDS - 1].end()
+    clause = stripped[:split_at].strip()
+    remainder = stripped[split_at:].lstrip()
+    return clause, text[:leading_whitespace] + remainder
 
 
 async def publish_pcm(channel: aio_pika.Channel, pcm_bytes: bytes, correlation_id: str | None) -> None:
@@ -308,11 +328,10 @@ async def main() -> None:
                         print(f"[TTS] Buffered text chunk: {chunk!r}; correlation_id={correlation_id}", flush=True)
 
                         while not is_interrupted(session_key, interrupted_at):
-                            match = CLAUSE_PATTERN.match(state.text)
-                            if not match:
+                            clause, remaining_text = pop_ready_clause(state.text)
+                            if not clause:
                                 break
-                            clause = match.group(1).strip()
-                            state.text = state.text[match.end() :]
+                            state.text = remaining_text
                             await synthesize_and_publish(
                                 channel,
                                 model,

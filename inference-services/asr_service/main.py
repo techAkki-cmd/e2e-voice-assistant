@@ -18,18 +18,25 @@ RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
 AUDIO_INCOMING_QUEUE = "audio.incoming.raw"
 TEXT_LLM_QUEUE = "text.llm.processing"
 
-ASR_MODEL_NAME = os.getenv("ASR_MODEL_NAME", "tiny.en")
+ASR_MODEL_NAME = os.getenv("ASR_MODEL_NAME", "base.en")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "cuda")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "float16")
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 VAD_FRAME_MS = int(os.getenv("ASR_VAD_FRAME_MS", "20"))
 VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "2"))
-SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "500"))
-MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "300"))
+SILENCE_FLUSH_MS = int(os.getenv("ASR_SILENCE_FLUSH_MS", "350"))
+MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "240"))
 MAX_UTTERANCE_MS = int(os.getenv("ASR_MAX_UTTERANCE_MS", "12000"))
-INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "0.8"))
-ENERGY_SILENCE_THRESHOLD = float(os.getenv("ASR_ENERGY_SILENCE_THRESHOLD", "250"))
+INACTIVITY_FLUSH_SECONDS = float(os.getenv("ASR_INACTIVITY_FLUSH_SECONDS", "0.6"))
+ENERGY_SILENCE_THRESHOLD = float(os.getenv("ASR_ENERGY_SILENCE_THRESHOLD", "220"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
+ASR_INITIAL_PROMPT = os.getenv(
+    "ASR_INITIAL_PROMPT",
+    (
+        "JarvisLabs, E2E Networks, GPU, GPUs, NVIDIA L4, A100, H100, RTX, CUDA, "
+        "VRAM, cloud instance, inference, deployment, pricing, account, support."
+    ),
+)
 
 
 @dataclass
@@ -149,6 +156,7 @@ def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> str:
         best_of=1,
         vad_filter=False,
         condition_on_previous_text=False,
+        initial_prompt=ASR_INITIAL_PROMPT,
         without_timestamps=True,
         temperature=0.0,
     )
