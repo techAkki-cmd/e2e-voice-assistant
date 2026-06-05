@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List
@@ -18,7 +19,7 @@ RABBITMQ_PASSWORD = os.getenv("RABBITMQ_PASSWORD", "guest")
 AUDIO_INCOMING_QUEUE = "audio.incoming.raw"
 TEXT_LLM_QUEUE = "text.llm.processing"
 
-ASR_MODEL_NAME = os.getenv("ASR_MODEL_NAME", "base.en")
+ASR_MODEL_NAME = os.getenv("ASR_MODEL_NAME", "small.en")
 ASR_DEVICE = os.getenv("ASR_DEVICE", "cuda")
 ASR_COMPUTE_TYPE = os.getenv("ASR_COMPUTE_TYPE", "float16")
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
@@ -35,12 +36,18 @@ ASR_MAX_NO_SPEECH_PROB = float(os.getenv("ASR_MAX_NO_SPEECH_PROB", "0.55"))
 ASR_MIN_AVG_LOGPROB = float(os.getenv("ASR_MIN_AVG_LOGPROB", "-0.85"))
 ASR_MAX_COMPRESSION_RATIO = float(os.getenv("ASR_MAX_COMPRESSION_RATIO", "2.6"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
+ASR_TURN_MERGE_SECONDS = float(os.getenv("ASR_TURN_MERGE_SECONDS", "1.2"))
+ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS = float(os.getenv("ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS", "0.45"))
 ASR_INITIAL_PROMPT = os.getenv(
     "ASR_INITIAL_PROMPT",
     (
-        "JarvisLabs, E2E Networks, GPU, GPUs, NVIDIA L4, A100, H100, RTX, CUDA, "
-        "VRAM, cloud instance, inference, deployment, pricing, account, support."
+        "Arijit, JarvisLabs, E2E Networks, GPU, GPUs, NVIDIA L4, A100, H100, RTX, CUDA, "
+        "VRAM, LLM, small LLM, cloud instance, inference, deployment, pricing, account, support."
     ),
+)
+ASR_TRANSCRIPT_REPLACEMENTS = os.getenv(
+    "ASR_TRANSCRIPT_REPLACEMENTS",
+    "Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;L&M=LLM;L and M=LLM;L.N.=LLM",
 )
 
 REJECTED_SHORT_TRANSCRIPTS = {
@@ -65,6 +72,23 @@ class TranscriptionResult:
     max_compression_ratio: float = 0.0
 
 
+def load_transcript_replacements() -> list[tuple[re.Pattern, str]]:
+    replacements = []
+    for item in ASR_TRANSCRIPT_REPLACEMENTS.split(";"):
+        if "=" not in item:
+            continue
+        source, target = item.split("=", 1)
+        source = source.strip()
+        target = target.strip()
+        if not source or not target:
+            continue
+        replacements.append((re.compile(rf"\b{re.escape(source)}\b", re.IGNORECASE), target))
+    return replacements
+
+
+TRANSCRIPT_REPLACEMENTS = load_transcript_replacements()
+
+
 @dataclass
 class SessionAudioBuffer:
     pcm_chunks: List[np.ndarray] = field(default_factory=list)
@@ -77,6 +101,11 @@ class SessionAudioBuffer:
     last_seen_monotonic: float = field(default_factory=time.monotonic)
     flush_task: asyncio.Task | None = None
     flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    transcript_fragments: List[str] = field(default_factory=list)
+    pending_correlation_id: str | None = None
+    pending_traceparent: str | None = None
+    transcript_publish_task: asyncio.Task | None = None
+    transcript_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 def rabbitmq_url() -> str:
@@ -186,6 +215,13 @@ def trace_headers(correlation_id: str | None, traceparent: str | None) -> dict:
     return headers
 
 
+def apply_transcript_replacements(transcript: str) -> str:
+    corrected = transcript
+    for pattern, replacement in TRANSCRIPT_REPLACEMENTS:
+        corrected = pattern.sub(replacement, corrected)
+    return " ".join(corrected.split())
+
+
 def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> TranscriptionResult:
     if not session.pcm_chunks:
         return TranscriptionResult("")
@@ -208,7 +244,7 @@ def transcribe_buffer(model: WhisperModel, session: SessionAudioBuffer) -> Trans
     )
     segment_list = list(segments)
     transcript = " ".join(segment.text.strip() for segment in segment_list).strip()
-    transcript = " ".join(transcript.split())
+    transcript = apply_transcript_replacements(transcript)
     if not segment_list:
         return TranscriptionResult(transcript)
 
@@ -262,6 +298,84 @@ async def publish_transcript(
     )
 
 
+def merged_text_from_fragments(fragments: List[str]) -> str:
+    return " ".join(" ".join(fragment.split()) for fragment in fragments if fragment.strip()).strip()
+
+
+def transcript_flush_delay(transcript: str) -> float:
+    if transcript.rstrip().endswith((".", "?", "!")):
+        return ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS
+    return ASR_TURN_MERGE_SECONDS
+
+
+def cancel_transcript_publish_task(session: SessionAudioBuffer) -> None:
+    if session.transcript_publish_task and not session.transcript_publish_task.done():
+        session.transcript_publish_task.cancel()
+    session.transcript_publish_task = None
+
+
+async def publish_pending_transcript(
+    channel: aio_pika.Channel,
+    session: SessionAudioBuffer,
+    reason: str,
+) -> None:
+    async with session.transcript_lock:
+        transcript = merged_text_from_fragments(session.transcript_fragments)
+        correlation_id = session.pending_correlation_id
+        traceparent = session.pending_traceparent
+        session.transcript_fragments.clear()
+        session.pending_correlation_id = None
+        session.pending_traceparent = None
+        session.transcript_publish_task = None
+
+    if not transcript:
+        return
+
+    await publish_transcript(channel, transcript, correlation_id, traceparent)
+    print(
+        f"[ASR] Published merged transcript via {reason}: {transcript!r}; "
+        f"correlation_id={correlation_id}; traceparent={traceparent}",
+        flush=True,
+    )
+
+
+async def publish_pending_transcript_later(
+    channel: aio_pika.Channel,
+    session: SessionAudioBuffer,
+    delay_seconds: float,
+) -> None:
+    try:
+        await asyncio.sleep(delay_seconds)
+        await publish_pending_transcript(channel, session, "coalescing")
+    except asyncio.CancelledError:
+        raise
+
+
+async def buffer_transcript_fragment(
+    channel: aio_pika.Channel,
+    session: SessionAudioBuffer,
+    transcript: str,
+    correlation_id: str | None,
+    traceparent: str | None,
+) -> None:
+    async with session.transcript_lock:
+        session.transcript_fragments.append(transcript)
+        session.pending_correlation_id = session.pending_correlation_id or correlation_id
+        session.pending_traceparent = traceparent
+        merged_transcript = merged_text_from_fragments(session.transcript_fragments)
+        delay_seconds = transcript_flush_delay(merged_transcript)
+        cancel_transcript_publish_task(session)
+        session.transcript_publish_task = asyncio.create_task(
+            publish_pending_transcript_later(channel, session, delay_seconds)
+        )
+
+    print(
+        f"[ASR] Buffered transcript fragment: {transcript!r}; merged={merged_transcript!r}; "
+        f"flush_delay_seconds={delay_seconds:.2f}; correlation_id={correlation_id}; traceparent={traceparent}",
+        flush=True,
+    )
+
+
 async def flush_session(
     channel: aio_pika.Channel,
     model: WhisperModel,
@@ -284,9 +398,9 @@ async def flush_session(
         should_publish, rejection_reason = should_publish_transcript(result, buffered_ms, speech_ms)
 
         if should_publish:
-            await publish_transcript(channel, result.text, correlation_id, traceparent)
+            await buffer_transcript_fragment(channel, session, result.text, correlation_id, traceparent)
             print(
-                f"[ASR] Published transcript via {reason}: {result.text!r}; "
+                f"[ASR] Accepted transcript fragment via {reason}: {result.text!r}; "
                 f"buffered_ms={buffered_ms}; speech_ms={speech_ms}; "
                 f"avg_logprob={result.avg_logprob:.2f}; no_speech_prob={result.max_no_speech_prob:.2f}; "
                 f"correlation_id={correlation_id}; traceparent={traceparent}",
@@ -326,6 +440,7 @@ def cleanup_expired_sessions(sessions: Dict[str, SessionAudioBuffer]) -> None:
     for key in expired:
         print(f"[ASR] Expiring inactive session buffer correlation_id={key}", flush=True)
         cancel_flush_task(sessions[key])
+        cancel_transcript_publish_task(sessions[key])
         del sessions[key]
 
 

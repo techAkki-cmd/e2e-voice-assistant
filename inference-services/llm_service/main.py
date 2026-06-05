@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -36,7 +37,7 @@ TEXT_TTS_QUEUE = "text.tts.processing"
 CONTROL_SIGNALS_EXCHANGE = "control.signals"
 
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
-MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "56"))
+MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "32"))
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
 TOP_P = float(os.getenv("LLM_TOP_P", "0.9"))
 REPETITION_PENALTY = float(os.getenv("LLM_REPETITION_PENALTY", "1.05"))
@@ -56,10 +57,41 @@ SYSTEM_PROMPT = os.getenv(
         "pricing, and exact models can change, so do not invent a live catalog. If asked for exact current "
         "inventory or pricing, say you can explain the types of GPUs and guide the user to check the live "
         "JarvisLabs dashboard. If the transcript looks garbled or off-topic, ask one concise clarification. "
-        "Use the conversation history. Reply in one short sentence when possible. Do not say goodbye unless "
-        "the user clearly says goodbye or asks to end the conversation."
+        "Use history and reply with exactly one complete sentence under 18 words, with no follow-up after a "
+        "direct answer. For small LLM GPU guidance, recommend by workload class: start with L4; use A100/H100 "
+        "for larger models or throughput. Do not invent live JarvisLabs GPU inventory, pricing, or availability. "
+        "Do not say goodbye unless the user clearly says goodbye or asks to end the conversation."
     ),
 )
+
+DIRECT_NAME_QUESTION_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"^\s*(?:what(?:'s| is) my name|tell me my name|do you remember my name)\s*\??\s*$",
+        r"^\s*(?:can you|could you|please)\s+tell me my name\s*\??\s*$",
+    ]
+]
+NAME_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in [
+        r"\bmy name is\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|i\s+need|i\s+want|please|can|could)\b)",
+        r"\bi am\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|i\s+need|i\s+want|please|can|could)\b)",
+        r"\bi'm\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|i\s+need|i\s+want|please|can|could)\b)",
+    ]
+]
+REJECTED_NAME_VALUES = {
+    "asking",
+    "checking",
+    "choosing",
+    "doing",
+    "fine",
+    "good",
+    "help",
+    "here",
+    "interested",
+    "looking",
+    "trying",
+}
 
 
 class KillSignalStoppingCriteria(StoppingCriteria):
@@ -261,6 +293,41 @@ async def save_history(redis_client: redis.Redis, user_id: str, history: List[di
     )
 
 
+def normalize_name(raw_name: str) -> str | None:
+    name = " ".join(raw_name.strip(" .!?,-;:").split())
+    if not name:
+        return None
+
+    words = name.split()
+    if len(words) > 4:
+        return None
+    if any(not re.fullmatch(r"[A-Za-z][A-Za-z'-]*", word) for word in words):
+        return None
+    if name.lower() in REJECTED_NAME_VALUES:
+        return None
+
+    return " ".join(word[:1].upper() + word[1:] for word in words)
+
+
+def is_direct_name_question(user_text: str) -> bool:
+    return any(pattern.match(user_text) for pattern in DIRECT_NAME_QUESTION_PATTERNS)
+
+
+def extract_latest_user_name(history: List[dict], current_transcript: str) -> str | None:
+    latest_name = None
+    user_texts = [item["content"] for item in history if item.get("role") == "user"]
+    user_texts.append(current_transcript)
+
+    for text in user_texts:
+        for pattern in NAME_PATTERNS:
+            for match in pattern.finditer(text):
+                name = normalize_name(match.group(1))
+                if name:
+                    latest_name = name
+
+    return latest_name
+
+
 def cleanup_interrupted_state(interrupted_at: Dict[str, float]) -> None:
     now = time.monotonic()
     for key in [key for key, seen_at in interrupted_at.items() if now - seen_at > INTERRUPT_TTL_SECONDS]:
@@ -384,12 +451,41 @@ async def main() -> None:
 
                             user_id = correlation_id or "__manual_smoke_test__"
                             history = await load_history(redis_client, user_id)
+
+                            response_id = uuid.uuid4().hex
+                            remembered_name = extract_latest_user_name(history, user_text)
+                            if is_direct_name_question(user_text) and remembered_name:
+                                assistant_text = f"Your name is {remembered_name}."
+                                await publish_text_chunk(
+                                    channel,
+                                    assistant_text,
+                                    correlation_id,
+                                    traceparent,
+                                    response_id,
+                                )
+                                await save_history(
+                                    redis_client,
+                                    user_id,
+                                    [
+                                        *history,
+                                        {"role": "user", "content": user_text},
+                                        {"role": "assistant", "content": assistant_text},
+                                    ],
+                                )
+                                print(
+                                    f"[LLM] Published direct memory answer: {assistant_text!r}; "
+                                    f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
+                                    flush=True,
+                                )
+                                cleanup_interrupted_state(interrupted_at)
+                                await message.ack()
+                                continue
+
                             stop_event = threading.Event()
 
                             if correlation_id:
                                 active_generations[correlation_id] = stop_event
 
-                            response_id = uuid.uuid4().hex
                             assistant_chunks = []
                             async for chunk in stream_response_chunks(tokenizer, model, history, user_text, stop_event):
                                 if stop_event.is_set():

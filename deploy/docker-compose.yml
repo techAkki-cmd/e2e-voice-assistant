@@ -45,6 +45,11 @@ services:
     gpus: all
     environment:
       - HF_HOME=/models/huggingface
+      - ASR_MODEL_NAME=small.en
+      - ASR_COMPUTE_TYPE=float16
+      - ASR_TURN_MERGE_SECONDS=1.2
+      - ASR_TERMINAL_PUNCTUATION_FLUSH_SECONDS=0.45
+      - ASR_INITIAL_PROMPT=Arijit, JarvisLabs, E2E Networks, GPU, GPUs, NVIDIA L4, A100, H100, RTX, CUDA, VRAM, LLM, small LLM, cloud instance, inference, deployment, pricing, account, support.
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
@@ -63,6 +68,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - LLM_HISTORY_TTL_SECONDS=86400
+      - LLM_MAX_NEW_TOKENS=32
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:
