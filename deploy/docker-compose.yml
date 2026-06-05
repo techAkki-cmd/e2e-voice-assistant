@@ -122,7 +122,7 @@ services:
       - PGVECTOR_PASSWORD=voice
       - RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
       - RAG_TOP_K=3
-      - RAG_MIN_SIMILARITY=0.20
+      - RAG_MIN_SIMILARITY=0.0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:

@@ -193,7 +193,11 @@ async def retrieve_context(pool: asyncpg.Pool, embedding: List[float]) -> str:
             RAG_TOP_K,
         )
 
+    top_scores = ", ".join(f"{row['source']}={float(row['similarity']):.3f}" for row in rows)
+    print(f"[RAG] Retrieval scores: {top_scores or 'none'}", flush=True)
     useful_rows = [row for row in rows if float(row["similarity"]) >= RAG_MIN_SIMILARITY]
+    if rows and not useful_rows:
+        useful_rows = list(rows)
     return "\n---\n".join(f"[{row['source']}]\n{row['content']}" for row in useful_rows)
 
 

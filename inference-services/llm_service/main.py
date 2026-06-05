@@ -105,6 +105,11 @@ DIRECT_GIRLFRIEND_NAME_QUESTION_PATTERNS = [
         r"\b(?:do\s+you\s+)?remember\s+my\s+girlfriend(?:'s|s)?\s+name\b",
     ]
 ]
+COMPANY_SUPPORT_TOPIC_PATTERN = re.compile(
+    r"\b(?:jarvislabs?|gpu|gpus|llm|dashboard|notebook|terminal|instance|deployment|deploy|"
+    r"pricing|billing|account|ssh|storage|container|cuda|pytorch|inference|refund|support)\b",
+    re.IGNORECASE,
+)
 GIRLFRIEND_NAME_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
     for pattern in [
@@ -387,6 +392,10 @@ def is_direct_girlfriend_name_question(user_text: str) -> bool:
     return any(pattern.search(user_text) for pattern in DIRECT_GIRLFRIEND_NAME_QUESTION_PATTERNS)
 
 
+def is_company_support_question(user_text: str) -> bool:
+    return bool(COMPANY_SUPPORT_TOPIC_PATTERN.search(user_text))
+
+
 def extract_latest_user_name(history: List[dict], current_transcript: str) -> str | None:
     latest_name = None
     user_texts = [item["content"] for item in history if item.get("role") == "user"]
@@ -617,6 +626,32 @@ async def main() -> None:
                                 )
                                 print(
                                     f"[LLM] Published direct memory answer: {assistant_text!r}; "
+                                    f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
+                                    flush=True,
+                                )
+                                cleanup_interrupted_state(interrupted_at)
+                                await message.ack()
+                                continue
+                            if not retrieved_context and is_company_support_question(user_text):
+                                assistant_text = "I don't know based on the provided company context."
+                                await publish_text_chunk(
+                                    channel,
+                                    assistant_text,
+                                    correlation_id,
+                                    traceparent,
+                                    response_id,
+                                )
+                                await save_history(
+                                    redis_client,
+                                    user_id,
+                                    [
+                                        *history,
+                                        {"role": "user", "content": user_text},
+                                        {"role": "assistant", "content": assistant_text},
+                                    ],
+                                )
+                                print(
+                                    f"[LLM] Published empty-context guard answer: {assistant_text!r}; "
                                     f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
                                     flush=True,
                                 )
