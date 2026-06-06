@@ -46,6 +46,7 @@ HISTORY_TURNS = int(os.getenv("LLM_HISTORY_TURNS", "6"))
 HISTORY_TTL_SECONDS = int(os.getenv("LLM_HISTORY_TTL_SECONDS", "86400"))
 INTERRUPT_TTL_SECONDS = float(os.getenv("LLM_INTERRUPT_TTL_SECONDS", "15"))
 LLM_WARMUP_ENABLED = os.getenv("LLM_WARMUP_ENABLED", "true").lower() == "true"
+EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS = float(os.getenv("LLM_EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS", "4"))
 
 SYSTEM_PROMPT = os.getenv(
     "LLM_SYSTEM_PROMPT",
@@ -432,6 +433,12 @@ def cleanup_interrupted_state(interrupted_at: Dict[str, float]) -> None:
         interrupted_at.pop(key, None)
 
 
+def cleanup_recent_timestamps(recent_events: Dict[str, float], ttl_seconds: float) -> None:
+    now = time.monotonic()
+    for key in [key for key, seen_at in recent_events.items() if now - seen_at > ttl_seconds]:
+        recent_events.pop(key, None)
+
+
 def header_as_text(headers: dict | None, name: str) -> str | None:
     if not headers:
         return None
@@ -514,6 +521,7 @@ async def main() -> None:
     tokenizer, model = load_model()
     active_generations: Dict[str, threading.Event] = {}
     interrupted_at: Dict[str, float] = {}
+    empty_context_guarded_at: Dict[str, float] = {}
     redis_client = await connect_redis()
     connection = await connect_broker()
 
@@ -633,6 +641,22 @@ async def main() -> None:
                                 await message.ack()
                                 continue
                             if not retrieved_context:
+                                last_guard_at = empty_context_guarded_at.get(user_id)
+                                now = time.monotonic()
+                                if last_guard_at is not None and now - last_guard_at < EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS:
+                                    print(
+                                        f"[LLM] Suppressed repeated empty-context guard; "
+                                        f"correlation_id={correlation_id}; traceparent={traceparent}",
+                                        flush=True,
+                                    )
+                                    cleanup_recent_timestamps(
+                                        empty_context_guarded_at,
+                                        EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS,
+                                    )
+                                    await message.ack()
+                                    continue
+
+                                empty_context_guarded_at[user_id] = now
                                 assistant_text = (
                                     "I didn't catch that clearly. Please repeat your question."
                                     if not is_company_support_question(user_text)
@@ -660,6 +684,10 @@ async def main() -> None:
                                     flush=True,
                                 )
                                 cleanup_interrupted_state(interrupted_at)
+                                cleanup_recent_timestamps(
+                                    empty_context_guarded_at,
+                                    EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS,
+                                )
                                 await message.ack()
                                 continue
 

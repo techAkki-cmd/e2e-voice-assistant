@@ -250,6 +250,7 @@
     const INPUT_FRAME_MS = 20;
     const INPUT_FRAME_BYTES = 640;
     const OUTPUT_SAMPLE_RATE = 44100;
+    const AUDIO_WORKLET_VERSION = "20260606-pcm16-v2";
     const SPEECH_RMS_THRESHOLD = 550;
     const SPEECH_END_HOLD_MS = 300;
 
@@ -460,7 +461,7 @@
       if (!app.audioContext.audioWorklet) {
         throw new Error("AudioWorklet is not supported in this browser.");
       }
-      await app.audioContext.audioWorklet.addModule("./audio-processor.js");
+      await app.audioContext.audioWorklet.addModule(`./audio-processor.js?v=${AUDIO_WORKLET_VERSION}`);
     }
 
     function createAnalyser() {

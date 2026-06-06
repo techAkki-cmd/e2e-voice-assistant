@@ -24,6 +24,9 @@ TEXT_ASR_LIVE_EXCHANGE = "text.asr.live"
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
 PARTIAL_THROTTLE_SECONDS = float(os.getenv("ASR_PARTIAL_THROTTLE_SECONDS", "0.15"))
+MIN_FINAL_AUDIO_SECONDS = float(os.getenv("ASR_MIN_FINAL_AUDIO_SECONDS", "0.75"))
+MIN_FINAL_CHARS = int(os.getenv("ASR_MIN_FINAL_CHARS", "8"))
+MIN_FINAL_WORDS = int(os.getenv("ASR_MIN_FINAL_WORDS", "2"))
 
 SHERPA_MODEL_DIR = Path(
     os.getenv(
@@ -74,6 +77,7 @@ class StreamingSession:
     last_published_partial_text: str = ""
     latest_traceparent: str | None = None
     last_partial_published_at: float = 0.0
+    accepted_sample_count: int = 0
     last_seen_monotonic: float = field(default_factory=time.monotonic)
 
 
@@ -119,9 +123,13 @@ def apply_transcript_replacements(transcript: str) -> str:
     return " ".join(corrected.split())
 
 
-def should_publish_final(transcript: str) -> bool:
+def should_publish_final(transcript: str, audio_seconds: float) -> bool:
     normalized = " ".join(transcript.strip().split())
-    if len(normalized) < 3:
+    if len(normalized) < MIN_FINAL_CHARS:
+        return False
+    if len(normalized.split()) < MIN_FINAL_WORDS:
+        return False
+    if audio_seconds < MIN_FINAL_AUDIO_SECONDS:
         return False
     return not any(pattern.search(normalized) for pattern in REJECT_FINAL_PATTERNS)
 
@@ -344,6 +352,7 @@ async def main() -> None:
                         await message.ack()
                         continue
 
+                    session.accepted_sample_count += int(samples.size)
                     session.stream.accept_waveform(SAMPLE_RATE, samples)
                     decode_ready(recognizer, session.stream)
 
@@ -353,16 +362,19 @@ async def main() -> None:
 
                     if recognizer.is_endpoint(session.stream):
                         final_transcript = transcript or session.last_published_partial_text
+                        audio_seconds = session.accepted_sample_count / SAMPLE_RATE
                         print(
                             f"[ASR] Endpoint detected; final={final_transcript!r}; "
+                            f"audio_seconds={audio_seconds:.2f}; "
                             f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
                             flush=True,
                         )
-                        if final_transcript and should_publish_final(final_transcript):
+                        if final_transcript and should_publish_final(final_transcript, audio_seconds):
                             await publish_final(channel, final_transcript, correlation_id, session.latest_traceparent)
                         elif final_transcript:
                             print(
                                 f"[ASR] Dropped rejected final transcript: {final_transcript!r}; "
+                                f"audio_seconds={audio_seconds:.2f}; "
                                 f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
                                 flush=True,
                             )
