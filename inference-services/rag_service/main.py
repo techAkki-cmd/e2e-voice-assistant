@@ -68,6 +68,14 @@ STOP_WORDS = {
     "which",
     "you",
 }
+NON_CONTEXT_VALUES = {
+    "miss",
+    "none",
+    "null",
+    "no context",
+    "no relevant context",
+    "error",
+}
 
 
 def rabbitmq_url() -> str:
@@ -208,6 +216,25 @@ def keyword_score(transcript: str, source: str, content: str) -> int:
     return overlap * 100 + source_priority(source)
 
 
+def sanitize_retrieved_context(retrieved_context: str) -> str:
+    if not isinstance(retrieved_context, str):
+        return ""
+
+    context = retrieved_context.strip()
+    if not context:
+        return ""
+
+    normalized = context.lower()
+    if normalized in NON_CONTEXT_VALUES:
+        return ""
+    if normalized.startswith("error ") or normalized.startswith("error:"):
+        return ""
+    if "error connecting to db" in normalized or "error connecting to database" in normalized:
+        return ""
+
+    return context
+
+
 async def seed_if_empty(pool: asyncpg.Pool, model: SentenceTransformer) -> None:
     async with pool.acquire() as connection:
         total_count = await connection.fetchval("SELECT count(*) FROM rag_chunks")
@@ -333,7 +360,7 @@ async def publish_llm_payload(
 ) -> None:
     payload = {
         "user_transcript": user_transcript,
-        "retrieved_context": retrieved_context,
+        "retrieved_context": sanitize_retrieved_context(retrieved_context),
     }
     await channel.default_exchange.publish(
         aio_pika.Message(

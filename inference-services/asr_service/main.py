@@ -11,6 +11,7 @@ from typing import Deque, Dict
 import aio_pika
 import numpy as np
 import sherpa_onnx
+import webrtcvad
 from faster_whisper import WhisperModel
 
 
@@ -25,14 +26,15 @@ TEXT_ASR_LIVE_EXCHANGE = "text.asr.live"
 
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
-SPEECH_RMS_THRESHOLD = float(os.getenv("ASR_SPEECH_RMS_THRESHOLD", "0.012"))
 SPEECH_START_FRAMES = int(os.getenv("ASR_SPEECH_START_FRAMES", "4"))
 PRE_ROLL_MS = int(os.getenv("ASR_PRE_ROLL_MS", "250"))
-TRAILING_SILENCE_MS = int(os.getenv("ASR_TRAILING_SILENCE_MS", "1500"))
+TRAILING_SILENCE_MS = int(os.getenv("ASR_TRAILING_SILENCE_MS", "2200"))
 MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "700"))
 MAX_UTTERANCE_SECONDS = float(os.getenv("ASR_MAX_UTTERANCE_SECONDS", "20"))
 MIN_FINAL_CHARS = int(os.getenv("ASR_MIN_FINAL_CHARS", "3"))
 MIN_FINAL_WORDS = int(os.getenv("ASR_MIN_FINAL_WORDS", "1"))
+VAD_GAIN = float(os.getenv("ASR_VAD_GAIN", "3.0"))
+VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "1"))
 
 WHISPER_MODEL_NAME = os.getenv("ASR_WHISPER_MODEL", "small.en")
 WHISPER_DEVICE = os.getenv("ASR_WHISPER_DEVICE", "cuda")
@@ -218,6 +220,34 @@ def pcm16_to_float32(body: bytes) -> np.ndarray:
     return audio_int16.astype(np.float32) / 32768.0
 
 
+def boost_pcm16_for_vad(raw_audio_bytes: bytes) -> bytes:
+    usable_length = len(raw_audio_bytes) - (len(raw_audio_bytes) % 2)
+    if usable_length <= 0:
+        return b""
+    audio_int16 = np.frombuffer(raw_audio_bytes[:usable_length], dtype="<i2")
+    boosted_audio = np.clip(
+        audio_int16.astype(np.int32) * VAD_GAIN,
+        -32768,
+        32767,
+    ).astype(np.int16)
+    return boosted_audio.tobytes()
+
+
+def vad_is_speech(vad: webrtcvad.Vad, body: bytes) -> bool:
+    boosted_body = boost_pcm16_for_vad(body)
+    if not boosted_body:
+        return False
+    try:
+        return vad.is_speech(boosted_body, SAMPLE_RATE)
+    except webrtcvad.Error as exc:
+        print(
+            f"[ASR] Invalid VAD frame ignored; bytes={len(boosted_body)}; "
+            f"sample_rate={SAMPLE_RATE}; error={exc}",
+            flush=True,
+        )
+        return False
+
+
 def frame_rms(samples: np.ndarray) -> float:
     if samples.size == 0:
         return 0.0
@@ -293,8 +323,14 @@ def pre_roll_limit() -> int:
     return max(1, int(round(PRE_ROLL_MS / frame_ms)))
 
 
-def update_speech_gate(session: StreamingSession, body: bytes, samples: np.ndarray, correlation_id: str) -> bool:
-    voiced = frame_rms(samples) >= SPEECH_RMS_THRESHOLD
+def update_speech_gate(
+    session: StreamingSession,
+    vad: webrtcvad.Vad,
+    body: bytes,
+    samples: np.ndarray,
+    correlation_id: str,
+) -> bool:
+    voiced = vad_is_speech(vad, body)
     started_this_frame = False
     session.pre_roll_frames.append(bytes(body))
     while len(session.pre_roll_frames) > pre_roll_limit():
@@ -315,7 +351,7 @@ def update_speech_gate(session: StreamingSession, body: bytes, samples: np.ndarr
         session.trailing_silence_samples = 0
         started_this_frame = True
         print(
-            f"[ASR] Speech gate started; rms={frame_rms(samples):.4f}; "
+            f"[ASR] Speech gate started; vad_mode={VAD_AGGRESSIVENESS}; rms={frame_rms(samples):.4f}; "
             f"correlation_id={correlation_id}; pre_roll_frames={len(session.pre_roll_frames)}",
             flush=True,
         )
@@ -468,6 +504,7 @@ def cleanup_expired_sessions(sessions: Dict[str, StreamingSession]) -> None:
 async def main() -> None:
     recognizer = load_recognizer()
     whisper_model = load_whisper_model()
+    vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
     sessions: Dict[str, StreamingSession] = {}
 
     connection = await connect_broker()
@@ -513,7 +550,7 @@ async def main() -> None:
                     if recognizer.is_endpoint(session.stream):
                         reset_sherpa_stream(session, recognizer)
 
-                    if update_speech_gate(session, message.body, samples, correlation_id):
+                    if update_speech_gate(session, vad, message.body, samples, correlation_id):
                         await finalize_utterance(channel, live_exchange, whisper_model, session, correlation_id)
                         reset_sherpa_stream(session, recognizer)
 

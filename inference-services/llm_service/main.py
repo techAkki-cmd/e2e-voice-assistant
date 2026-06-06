@@ -44,25 +44,18 @@ HISTORY_TURNS = int(os.getenv("LLM_HISTORY_TURNS", "6"))
 HISTORY_TTL_SECONDS = int(os.getenv("LLM_HISTORY_TTL_SECONDS", "86400"))
 INTERRUPT_TTL_SECONDS = float(os.getenv("LLM_INTERRUPT_TTL_SECONDS", "15"))
 LLM_WARMUP_ENABLED = os.getenv("LLM_WARMUP_ENABLED", "true").lower() == "true"
-EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS = float(os.getenv("LLM_EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS", "4"))
 
 SYSTEM_PROMPT = os.getenv(
     "LLM_SYSTEM_PROMPT",
     (
-        "You are a concise voice assistant. Answer safe general questions normally. "
-        "For company, product, platform, support, pricing, billing, GPU cloud, or deployment questions, "
-        "use only the retrieved company context. Do not invent company facts, inventory, pricing, or policies. "
-        "Use exactly one complete answer unless the user asks for detail."
+        "You are Jarvis, a highly capable, conversational AI assistant. You are speaking to the user "
+        "over a live voice interface, so keep your answers concise, natural, and easy to listen to. "
+        "Do not use markdown, bullet points, or emojis. If relevant company context is provided below, "
+        "seamlessly incorporate it into your answer. If the context is empty or irrelevant, rely on your "
+        "vast general knowledge to be as helpful and engaging as possible. NEVER say 'Based on the context' "
+        "or 'The document does not mention this.' Just answer the question fluidly."
     ),
 )
-RAG_CONTEXT_INSTRUCTIONS = os.getenv(
-    "LLM_RAG_CONTEXT_INSTRUCTIONS",
-    (
-        "Company context is provided below. For company-related questions, answer only from this context. "
-        "If the context lacks the answer, say exactly: I don't know based on the company documents I have."
-    ),
-)
-COMPANY_CONTEXT_FALLBACK = "I don't know based on the company documents I have."
 GARBLED_TRANSCRIPT_FALLBACK = "I didn't catch that clearly. Please repeat."
 ASSISTANT_IDENTITY_ANSWER = "I'm Jarvis, your voice assistant."
 COURTESY_ANSWER = "You're welcome."
@@ -205,11 +198,10 @@ def load_model():
 
 
 def build_system_prompt(retrieved_context: str, is_company_question: bool) -> str:
-    if not is_company_question:
+    context = retrieved_context.strip()
+    if not context:
         return SYSTEM_PROMPT
-
-    context = retrieved_context.strip() or "No relevant company context was retrieved."
-    return f"{SYSTEM_PROMPT}\n\n{RAG_CONTEXT_INSTRUCTIONS}\n\nRetrieved company context:\n{context}"
+    return f"{SYSTEM_PROMPT}\n\nRelevant company context:\n{context}"
 
 
 def parse_rag_payload(body: bytes) -> tuple[str, str]:
@@ -326,7 +318,12 @@ def history_key(user_id: str) -> str:
 
 
 async def load_history(redis_client: redis.Redis, user_id: str) -> List[dict]:
-    raw_history = await redis_client.get(history_key(user_id))
+    try:
+        raw_history = await redis_client.get(history_key(user_id))
+    except RedisError as exc:
+        print(f"[LLM] Redis history load failed user_id={user_id}: {exc}", flush=True)
+        return []
+
     if not raw_history:
         return []
 
@@ -353,11 +350,14 @@ async def load_history(redis_client: redis.Redis, user_id: str) -> List[dict]:
 
 async def save_history(redis_client: redis.Redis, user_id: str, history: List[dict]) -> None:
     trimmed_history = trim_history(history)
-    await redis_client.set(
-        history_key(user_id),
-        json.dumps(trimmed_history, separators=(",", ":")),
-        ex=HISTORY_TTL_SECONDS,
-    )
+    try:
+        await redis_client.set(
+            history_key(user_id),
+            json.dumps(trimmed_history, separators=(",", ":")),
+            ex=HISTORY_TTL_SECONDS,
+        )
+    except RedisError as exc:
+        print(f"[LLM] Redis history save failed user_id={user_id}: {exc}", flush=True)
 
 
 def normalize_name(raw_name: str) -> str | None:
@@ -556,7 +556,6 @@ async def main() -> None:
     tokenizer, model = load_model()
     active_generations: Dict[str, threading.Event] = {}
     interrupted_at: Dict[str, float] = {}
-    empty_context_guarded_at: Dict[str, float] = {}
     redis_client = await connect_redis()
     connection = await connect_broker()
 
@@ -684,28 +683,8 @@ async def main() -> None:
                                 await message.ack()
                                 continue
 
-                            if looks_garbled(user_text) or (is_company_question and not retrieved_context):
-                                last_guard_at = empty_context_guarded_at.get(user_id)
-                                now = time.monotonic()
-                                if last_guard_at is not None and now - last_guard_at < EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS:
-                                    print(
-                                        f"[LLM] Suppressed repeated empty-context guard; "
-                                        f"correlation_id={correlation_id}; traceparent={traceparent}",
-                                        flush=True,
-                                    )
-                                    cleanup_recent_timestamps(
-                                        empty_context_guarded_at,
-                                        EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS,
-                                    )
-                                    await message.ack()
-                                    continue
-
-                                empty_context_guarded_at[user_id] = now
-                                assistant_text = (
-                                    COMPANY_CONTEXT_FALLBACK
-                                    if is_company_question and not retrieved_context
-                                    else GARBLED_TRANSCRIPT_FALLBACK
-                                )
+                            if looks_garbled(user_text):
+                                assistant_text = GARBLED_TRANSCRIPT_FALLBACK
                                 await publish_text_chunk(
                                     channel,
                                     assistant_text,
@@ -728,10 +707,6 @@ async def main() -> None:
                                     flush=True,
                                 )
                                 cleanup_interrupted_state(interrupted_at)
-                                cleanup_recent_timestamps(
-                                    empty_context_guarded_at,
-                                    EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS,
-                                )
                                 await message.ack()
                                 continue
 
