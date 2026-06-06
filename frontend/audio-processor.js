@@ -8,19 +8,23 @@ class PCM16CaptureProcessor extends AudioWorkletProcessor {
     this.sourceOffset = 0;
     this.frame = new Int16Array(this.frameSampleCount);
     this.frameOffset = 0;
+    this.reportedAudioConfig = false;
   }
 
   process(inputs, outputs) {
-    const input = inputs[0]?.[0];
+    const inputChannels = inputs[0] || [];
     const output = outputs[0]?.[0];
 
     if (output) {
       output.fill(0);
     }
 
+    const input = this.toMono(inputChannels);
     if (!input || input.length === 0) {
       return true;
     }
+
+    this.reportAudioConfig(inputChannels.length);
 
     if (sampleRate === this.targetSampleRate) {
       for (let index = 0; index < input.length; index += 1) {
@@ -48,6 +52,44 @@ class PCM16CaptureProcessor extends AudioWorkletProcessor {
     this.pending = combined.slice(consumed);
 
     return true;
+  }
+
+  toMono(inputChannels) {
+    if (!inputChannels.length) {
+      return null;
+    }
+
+    if (inputChannels.length === 1) {
+      return inputChannels[0];
+    }
+
+    const frameLength = inputChannels[0].length;
+    const mono = new Float32Array(frameLength);
+    for (let channelIndex = 0; channelIndex < inputChannels.length; channelIndex += 1) {
+      const channel = inputChannels[channelIndex];
+      for (let sampleIndex = 0; sampleIndex < frameLength; sampleIndex += 1) {
+        mono[sampleIndex] += channel[sampleIndex] || 0;
+      }
+    }
+
+    for (let sampleIndex = 0; sampleIndex < frameLength; sampleIndex += 1) {
+      mono[sampleIndex] /= inputChannels.length;
+    }
+
+    return mono;
+  }
+
+  reportAudioConfig(channelCount) {
+    if (this.reportedAudioConfig) {
+      return;
+    }
+
+    this.port.postMessage({
+      type: "audio_config",
+      sampleRate,
+      channels: channelCount,
+    });
+    this.reportedAudioConfig = true;
   }
 
   pushSample(sample) {

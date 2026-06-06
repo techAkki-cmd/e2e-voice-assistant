@@ -587,6 +587,8 @@
         const socket = await connectWebSocket();
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
+            channelCount: { ideal: 1, max: 1 },
+            sampleRate: { ideal: INPUT_SAMPLE_RATE },
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
@@ -594,6 +596,7 @@
         });
         app.mediaStream = stream;
         log("Microphone permission granted", "ok");
+        logMicrophoneSettings(stream);
         await ensureAudioWorklet();
 
         app.micAnalyser = createAnalyser();
@@ -610,7 +613,7 @@
         app.micAnalyser.connect(app.workletNode);
         app.workletNode.connect(app.silenceGain);
         app.silenceGain.connect(app.audioContext.destination);
-        app.workletNode.port.onmessage = (event) => sendPcmFrame(event.data, socket);
+        app.workletNode.port.onmessage = (event) => handleWorkletMessage(event.data, socket);
 
         app.activeAnalyser = app.micAnalyser;
         elements.visualizerMode.textContent = "microphone input";
@@ -622,6 +625,22 @@
         setState("Error", reason);
         await stopSession({ resetState: false });
       }
+    }
+
+    function logMicrophoneSettings(stream) {
+      const settings = stream.getAudioTracks()[0]?.getSettings?.() || {};
+      const channelCount = settings.channelCount ?? "unknown";
+      const sampleRate = settings.sampleRate ?? "unknown";
+      log(`Microphone settings channelCount=${channelCount} sampleRate=${sampleRate}`, channelCount === 1 ? "ok" : "warn");
+    }
+
+    function handleWorkletMessage(message, socket) {
+      if (message?.type === "audio_config") {
+        log(`AudioWorklet input channels=${message.channels} sampleRate=${message.sampleRate}`, message.channels === 1 ? "ok" : "warn");
+        return;
+      }
+
+      sendPcmFrame(message, socket);
     }
 
     function sendPcmFrame(frame, socket) {
