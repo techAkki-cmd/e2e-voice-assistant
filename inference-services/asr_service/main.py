@@ -10,6 +10,7 @@ from typing import Dict
 import aio_pika
 import numpy as np
 import sherpa_onnx
+from faster_whisper import WhisperModel
 
 
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
@@ -27,6 +28,20 @@ PARTIAL_THROTTLE_SECONDS = float(os.getenv("ASR_PARTIAL_THROTTLE_SECONDS", "0.15
 MIN_FINAL_AUDIO_SECONDS = float(os.getenv("ASR_MIN_FINAL_AUDIO_SECONDS", "0.75"))
 MIN_FINAL_CHARS = int(os.getenv("ASR_MIN_FINAL_CHARS", "8"))
 MIN_FINAL_WORDS = int(os.getenv("ASR_MIN_FINAL_WORDS", "2"))
+ENABLE_FINAL_REFINER = os.getenv("ASR_ENABLE_FINAL_REFINER", "true").lower() == "true"
+FINAL_REFINER_MODEL = os.getenv("ASR_FINAL_REFINER_MODEL", "small.en")
+FINAL_REFINER_DEVICE = os.getenv("ASR_FINAL_REFINER_DEVICE", "cuda")
+FINAL_REFINER_COMPUTE_TYPE = os.getenv("ASR_FINAL_REFINER_COMPUTE_TYPE", "float16")
+FINAL_REFINER_BEAM_SIZE = int(os.getenv("ASR_FINAL_REFINER_BEAM_SIZE", "5"))
+FINAL_REFINER_INITIAL_PROMPT = os.getenv(
+    "ASR_FINAL_REFINER_INITIAL_PROMPT",
+    (
+        "JarvisLabs voice assistant. Common terms: GPU, GPUs, G P U, GUI, "
+        "graphical user interface, G U I, JarvisLabs dashboard, Jupyter Notebook, "
+        "notebook, terminal, instance, deployment, NVIDIA L4, A100, H100, "
+        "small LLM projects."
+    ),
+)
 
 SHERPA_MODEL_DIR = Path(
     os.getenv(
@@ -73,6 +88,7 @@ ASR_REJECT_FINAL_PATTERNS = os.getenv(
 @dataclass
 class StreamingSession:
     stream: object
+    audio_buffer: bytearray = field(default_factory=bytearray)
     last_partial_text: str = ""
     last_published_partial_text: str = ""
     latest_traceparent: str | None = None
@@ -167,6 +183,27 @@ def load_recognizer():
     return recognizer
 
 
+def load_final_refiner() -> WhisperModel | None:
+    if not ENABLE_FINAL_REFINER:
+        print("[ASR] Final transcript refiner disabled", flush=True)
+        return None
+
+    print(
+        "[ASR] Loading final transcript refiner "
+        f"model={FINAL_REFINER_MODEL} device={FINAL_REFINER_DEVICE} "
+        f"compute_type={FINAL_REFINER_COMPUTE_TYPE}",
+        flush=True,
+    )
+    model = WhisperModel(
+        FINAL_REFINER_MODEL,
+        device=FINAL_REFINER_DEVICE,
+        compute_type=FINAL_REFINER_COMPUTE_TYPE,
+        download_root=os.getenv("HF_HOME", "/models/huggingface"),
+    )
+    print("[ASR] Final transcript refiner ready", flush=True)
+    return model
+
+
 def pcm16_to_float32(body: bytes) -> np.ndarray:
     usable_length = len(body) - (len(body) % 2)
     if usable_length <= 0:
@@ -199,6 +236,36 @@ def get_result_text(recognizer, stream) -> str:
     result = recognizer.get_result(stream)
     text = getattr(result, "text", result)
     return apply_transcript_replacements(str(text).strip())
+
+
+def refine_final_transcript(refiner: WhisperModel | None, audio_bytes: bytes, fallback: str) -> str:
+    if not refiner or not audio_bytes:
+        return fallback
+
+    audio = pcm16_to_float32(audio_bytes)
+    if audio.size == 0:
+        return fallback
+
+    segments, info = refiner.transcribe(
+        audio,
+        language="en",
+        task="transcribe",
+        beam_size=FINAL_REFINER_BEAM_SIZE,
+        condition_on_previous_text=False,
+        initial_prompt=FINAL_REFINER_INITIAL_PROMPT,
+        vad_filter=False,
+    )
+    refined = apply_transcript_replacements(" ".join(segment.text.strip() for segment in segments).strip())
+    if not refined:
+        return fallback
+
+    print(
+        f"[ASR] Refined final transcript: {refined!r}; "
+        f"language={getattr(info, 'language', None)}; "
+        f"language_probability={getattr(info, 'language_probability', None)}",
+        flush=True,
+    )
+    return refined
 
 
 def decode_ready(recognizer, stream) -> None:
@@ -314,6 +381,7 @@ def cleanup_expired_sessions(sessions: Dict[str, StreamingSession]) -> None:
 
 async def main() -> None:
     recognizer = load_recognizer()
+    final_refiner = load_final_refiner()
     sessions: Dict[str, StreamingSession] = {}
 
     connection = await connect_broker()
@@ -352,6 +420,7 @@ async def main() -> None:
                         await message.ack()
                         continue
 
+                    session.audio_buffer.extend(message.body)
                     session.accepted_sample_count += int(samples.size)
                     session.stream.accept_waveform(SAMPLE_RATE, samples)
                     decode_ready(recognizer, session.stream)
@@ -369,6 +438,22 @@ async def main() -> None:
                             f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
                             flush=True,
                         )
+                        if final_refiner and audio_seconds >= MIN_FINAL_AUDIO_SECONDS:
+                            refined_transcript = await asyncio.to_thread(
+                                refine_final_transcript,
+                                final_refiner,
+                                bytes(session.audio_buffer),
+                                final_transcript,
+                            )
+                            if refined_transcript != final_transcript:
+                                print(
+                                    f"[ASR] Final transcript replaced by refiner: "
+                                    f"sherpa={final_transcript!r}; refined={refined_transcript!r}; "
+                                    f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
+                                    flush=True,
+                                )
+                            final_transcript = refined_transcript
+
                         if final_transcript and should_publish_final(final_transcript, audio_seconds):
                             await publish_final(channel, final_transcript, correlation_id, session.latest_traceparent)
                         elif final_transcript:

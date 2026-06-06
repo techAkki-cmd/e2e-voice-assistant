@@ -78,12 +78,19 @@ services:
       - ASR_MIN_FINAL_AUDIO_SECONDS=0.75
       - ASR_MIN_FINAL_CHARS=8
       - ASR_MIN_FINAL_WORDS=2
+      - ASR_ENABLE_FINAL_REFINER=true
+      - ASR_FINAL_REFINER_MODEL=small.en
+      - ASR_FINAL_REFINER_DEVICE=cuda
+      - ASR_FINAL_REFINER_COMPUTE_TYPE=float16
       - ASR_TRANSCRIPT_REPLACEMENTS=Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;L&M=LLM;L and M=LLM;L.N.=LLM;GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;4GPU=What GPU;geo needs=GPU needs;geo instance=GPU instance
       - ASR_REJECT_FINAL_PATTERNS=\bENDASPERATED\b;^\s*(?:THANKS FOR WATCHING|PLEASE SUBSCRIBE|SUBSCRIBE)\b
+      - HF_HOME=/models/huggingface
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:
       - rabbitmq
+    volumes:
+      - model-cache:/models
     networks:
       - e2e-network
 
