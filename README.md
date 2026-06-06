@@ -6,7 +6,7 @@
 
 The live demo URL is activated during the review window because GPU inference runs on a paid JarvisLabs L4 instance. For no-domain review access, start the stack on the L4 VM and run `cloudflared tunnel --url http://localhost:80`; the generated HTTPS URL becomes the temporary live reviewer link while the VM and tunnel are running.
 
-JarvisLabs Real-Time Voice Assistant is a submission for the **Real-time voice assistant using open models** assignment. It is built as a distributed, interruptible voice system rather than a turn-based text chatbot wrapped in a microphone UI.
+JarvisLabs Real-Time Voice Assistant is a **Real-time voice assistant using open models**. It is built as a distributed, interruptible voice system rather than a turn-based text chatbot wrapped in a microphone UI.
 
 ## What It Does
 
