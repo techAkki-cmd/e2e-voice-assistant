@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Iterable, List
 
@@ -29,6 +30,44 @@ EMBEDDING_MODEL_NAME = os.getenv("RAG_EMBEDDING_MODEL", "sentence-transformers/a
 RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 RAG_MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", "0.30"))
 SEED_CHUNKS_PATH = Path(os.getenv("RAG_SEED_CHUNKS_PATH", "/app/seed_chunks.json"))
+
+KEYWORD_FALLBACK_TRIGGER = re.compile(
+    r"\b(?:company|companies|document|documents|documented|docs|jarvislabs?|platform|"
+    r"service|services|dashboard|gpu|gpus|llm|features?|polic(?:y|ies))\b",
+    re.IGNORECASE,
+)
+POLICY_QUERY_PATTERN = re.compile(r"\bpolic(?:y|ies)\b", re.IGNORECASE)
+TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
+SOURCE_PRIORITIES = {
+    "jarvislabs-platform-overview": 90,
+    "company-docs": 80,
+    "jarvislabs-dashboard-and-access": 70,
+    "gpu-guidance-small-llm": 60,
+    "deployment-support-scope": 50,
+    "live-inventory-caveat": 40,
+}
+STOP_WORDS = {
+    "a",
+    "about",
+    "and",
+    "are",
+    "can",
+    "could",
+    "do",
+    "for",
+    "have",
+    "i",
+    "is",
+    "me",
+    "of",
+    "please",
+    "tell",
+    "the",
+    "to",
+    "what",
+    "which",
+    "you",
+}
 
 
 def rabbitmq_url() -> str:
@@ -130,6 +169,45 @@ def chunk_hash(source: str, content: str) -> str:
     return hashlib.sha256(f"{source}\n{content}".encode("utf-8")).hexdigest()
 
 
+def tokenize(text: str) -> set[str]:
+    return {token for token in TOKEN_PATTERN.findall(text.lower()) if token not in STOP_WORDS}
+
+
+def source_priority(source: str) -> int:
+    for prefix, priority in SOURCE_PRIORITIES.items():
+        if source.startswith(prefix):
+            return priority
+    return 0
+
+
+def keyword_query_terms(transcript: str) -> set[str]:
+    terms = tokenize(transcript)
+    lowered = transcript.lower()
+    if re.search(r"\b(?:company|companies|document|documents|documented|docs)\b", lowered):
+        terms.update({"jarvislabs", "cloud", "gpu", "compute", "platform"})
+    if re.search(r"\b(?:service|services|platform)\b", lowered):
+        terms.update({"jarvislabs", "support", "instance", "deployment", "dashboard"})
+    if re.search(r"\b(?:feature|features|dashboard)\b", lowered):
+        terms.update({"dashboard", "instance", "notebook", "terminal", "deployment"})
+    if re.search(r"\b(?:gpu|gpus|llm)\b", lowered):
+        terms.update({"gpu", "llm", "l4", "a100", "h100"})
+    return terms
+
+
+def keyword_score(transcript: str, source: str, content: str) -> int:
+    query_terms = keyword_query_terms(transcript)
+    if not query_terms:
+        return 0
+
+    content_terms = tokenize(f"{source} {content}")
+    overlap = len(query_terms & content_terms)
+    if POLICY_QUERY_PATTERN.search(transcript) and not POLICY_QUERY_PATTERN.search(content):
+        return 0
+    if overlap == 0:
+        return 0
+    return overlap * 100 + source_priority(source)
+
+
 async def seed_if_empty(pool: asyncpg.Pool, model: SentenceTransformer) -> None:
     async with pool.acquire() as connection:
         total_count = await connection.fetchval("SELECT count(*) FROM rag_chunks")
@@ -189,7 +267,33 @@ def forward_headers(correlation_id: str | None, traceparent: str | None, user_id
     return headers
 
 
-async def retrieve_context(pool: asyncpg.Pool, embedding: List[float]) -> str:
+async def retrieve_keyword_context(pool: asyncpg.Pool, transcript: str) -> str:
+    if not KEYWORD_FALLBACK_TRIGGER.search(transcript):
+        return ""
+
+    async with pool.acquire() as connection:
+        rows = await connection.fetch(
+            """
+            SELECT source, content
+            FROM rag_chunks
+            WHERE content IS NOT NULL
+            """
+        )
+
+    ranked_rows = sorted(
+        (
+            (keyword_score(transcript, row["source"], row["content"]), row)
+            for row in rows
+        ),
+        key=lambda item: (-item[0], -source_priority(item[1]["source"]), item[1]["source"]),
+    )
+    useful_rows = [row for score, row in ranked_rows if score > 0][:RAG_TOP_K]
+    scores = ", ".join(f"{row['source']}={keyword_score(transcript, row['source'], row['content'])}" for row in useful_rows)
+    print(f"[RAG] Keyword fallback scores: {scores or 'none'}", flush=True)
+    return "\n---\n".join(f"[{row['source']}]\n{row['content']}" for row in useful_rows)
+
+
+async def retrieve_context(pool: asyncpg.Pool, embedding: List[float], transcript: str) -> tuple[str, str]:
     async with pool.acquire() as connection:
         async with connection.transaction():
             # Exact scan avoids IVFFlat returning no candidates on tiny demo datasets.
@@ -210,7 +314,13 @@ async def retrieve_context(pool: asyncpg.Pool, embedding: List[float]) -> str:
     top_scores = ", ".join(f"{row['source']}={float(row['similarity']):.3f}" for row in rows)
     print(f"[RAG] Retrieval scores: {top_scores or 'none'}", flush=True)
     useful_rows = [row for row in rows if float(row["similarity"]) >= RAG_MIN_SIMILARITY]
-    return "\n---\n".join(f"[{row['source']}]\n{row['content']}" for row in useful_rows)
+    if useful_rows:
+        return "\n---\n".join(f"[{row['source']}]\n{row['content']}" for row in useful_rows), "hit-vector"
+
+    keyword_context = await retrieve_keyword_context(pool, transcript)
+    if keyword_context:
+        return keyword_context, "hit-keyword"
+    return "", "miss"
 
 
 async def publish_llm_payload(
@@ -266,7 +376,7 @@ async def main() -> None:
                             continue
 
                         embedding = (await asyncio.to_thread(embed_texts, model, [user_transcript]))[0]
-                        retrieved_context = await retrieve_context(pg_pool, embedding)
+                        retrieved_context, context_status = await retrieve_context(pg_pool, embedding, user_transcript)
                         await publish_llm_payload(
                             channel,
                             user_transcript,
@@ -276,7 +386,6 @@ async def main() -> None:
                             user_id,
                         )
 
-                        context_status = "hit" if retrieved_context else "miss"
                         print(
                             f"[RAG] Published RAG payload context={context_status}; "
                             f"transcript={user_transcript!r}; context_chars={len(retrieved_context)}; "
