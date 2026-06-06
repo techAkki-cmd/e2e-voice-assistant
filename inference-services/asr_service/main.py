@@ -25,8 +25,6 @@ TEXT_ASR_LIVE_EXCHANGE = "text.asr.live"
 
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
-PARTIAL_THROTTLE_SECONDS = float(os.getenv("ASR_PARTIAL_THROTTLE_SECONDS", "0.15"))
-
 SPEECH_RMS_THRESHOLD = float(os.getenv("ASR_SPEECH_RMS_THRESHOLD", "0.012"))
 SPEECH_START_FRAMES = int(os.getenv("ASR_SPEECH_START_FRAMES", "3"))
 PRE_ROLL_MS = int(os.getenv("ASR_PRE_ROLL_MS", "250"))
@@ -95,10 +93,7 @@ class StreamingSession:
     speech_samples: int = 0
     trailing_silence_samples: int = 0
     utterance_samples: int = 0
-    last_partial_text: str = ""
-    last_published_partial_text: str = ""
     latest_traceparent: str | None = None
-    last_partial_published_at: float = 0.0
     last_seen_monotonic: float = field(default_factory=time.monotonic)
 
 
@@ -277,9 +272,6 @@ def reset_sherpa_stream(session: StreamingSession, recognizer) -> None:
         recognizer.reset(session.stream)
     else:
         session.stream = recognizer.create_stream()
-    session.last_partial_text = ""
-    session.last_published_partial_text = ""
-    session.last_partial_published_at = 0.0
 
 
 def reset_speech_gate(session: StreamingSession) -> None:
@@ -415,24 +407,6 @@ async def publish_final(
     )
 
 
-async def maybe_publish_partial(
-    exchange: aio_pika.Exchange,
-    session: StreamingSession,
-    transcript: str,
-    correlation_id: str,
-) -> None:
-    if not transcript or transcript == session.last_published_partial_text:
-        return
-
-    now = time.monotonic()
-    if now - session.last_partial_published_at < PARTIAL_THROTTLE_SECONDS:
-        return
-
-    session.last_published_partial_text = transcript
-    session.last_partial_published_at = now
-    await publish_live_transcript(exchange, "partial", transcript, correlation_id, session.latest_traceparent)
-
-
 async def finalize_utterance(
     channel: aio_pika.Channel,
     live_exchange: aio_pika.Exchange,
@@ -508,7 +482,7 @@ async def main() -> None:
 
         print(
             f"[ASR] Streaming {AUDIO_INCOMING_QUEUE} as {SAMPLE_RATE} Hz PCM16; "
-            "sherpa partials enabled, Whisper finals authoritative.",
+            "sherpa endpointing enabled, Whisper finals authoritative.",
             flush=True,
         )
 
@@ -532,10 +506,6 @@ async def main() -> None:
 
                     session.stream.accept_waveform(SAMPLE_RATE, samples)
                     decode_ready(recognizer, session.stream)
-
-                    transcript = get_result_text(recognizer, session.stream)
-                    session.last_partial_text = transcript
-                    await maybe_publish_partial(live_exchange, session, transcript, correlation_id)
 
                     if recognizer.is_endpoint(session.stream):
                         reset_sherpa_stream(session, recognizer)

@@ -743,11 +743,6 @@
 
       try {
         const event = JSON.parse(payload);
-        if (event.event === "transcript_partial" && typeof event.text === "string") {
-          setLiveTranscript(event.text);
-          log(`ASR partial: ${event.text}`, "rx");
-          return;
-        }
         if (event.event === "transcript_final" && typeof event.text === "string") {
           setLiveTranscript(event.text);
           elements.liveTranscriptStatus.textContent = "final";
