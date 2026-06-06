@@ -1,5 +1,0 @@
-ai/e2e/orchestrator/amqp/AudioResponseListener.class
-ai/e2e/orchestrator/config/WebSocketConfig.class
-ai/e2e/orchestrator/OrchestratorApplication.class
-ai/e2e/orchestrator/config/RabbitMQConfig.class
-ai/e2e/orchestrator/websocket/AudioStreamHandler.class

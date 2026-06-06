@@ -1,0 +1,85 @@
+# macOS / OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# IntelliJ IDEA / JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Java / Spring Boot / Maven
+target/
+*.class
+*.jar
+*.war
+*.ear
+*.log
+.mvn/wrapper/maven-wrapper.jar
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+*.egg-info/
+dist/
+build/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Docker / local runtime artifacts
+docker-compose.override.yml
+*.pid
+*.sock
+
+# Model and data caches
+models/
+model-cache/
+.cache/
+huggingface/
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.bin
+
+# Local generated media / demo scratch files
+recordings/
+tmp/
+temp/
+*.wav
+*.mp3
+*.webm
+*.mp4
+
+# Keep intentional placeholder files
+!deploy/rag-docs/.gitkeep
