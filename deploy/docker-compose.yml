@@ -95,7 +95,7 @@ services:
       - ASR_SHERPA_RULE3_MIN_UTTERANCE_LENGTH=20
       - ASR_SPEECH_START_FRAMES=4
       - ASR_PRE_ROLL_MS=250
-      - ASR_TRAILING_SILENCE_MS=1550
+      - ASR_TRAILING_SILENCE_MS=1350
       - ASR_MIN_VAD_RMS=0.0025
       - ASR_MIN_SPEECH_MS=550
       - ASR_MAX_UTTERANCE_SECONDS=12
@@ -174,6 +174,8 @@ services:
     gpus: all
     environment:
       - HF_HOME=/models/huggingface
+      - TTS_SOFT_CLAUSE_WORDS=6
+      - TTS_SOFT_CLAUSE_CHARS=36
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
