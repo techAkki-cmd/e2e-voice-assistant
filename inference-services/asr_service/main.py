@@ -33,15 +33,15 @@ SHERPA_MODEL_DIR = Path(
 )
 SHERPA_ENCODER = os.getenv(
     "ASR_SHERPA_ENCODER",
-    "encoder-epoch-99-avg-1-chunk-16-left-64.onnx",
+    "encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
 )
 SHERPA_DECODER = os.getenv(
     "ASR_SHERPA_DECODER",
-    "decoder-epoch-99-avg-1-chunk-16-left-64.onnx",
+    "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
 )
 SHERPA_JOINER = os.getenv(
     "ASR_SHERPA_JOINER",
-    "joiner-epoch-99-avg-1-chunk-16-left-64.onnx",
+    "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
 )
 SHERPA_TOKENS = os.getenv("ASR_SHERPA_TOKENS", "tokens.txt")
 SHERPA_PROVIDER = os.getenv("ASR_SHERPA_PROVIDER", "cpu")

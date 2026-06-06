@@ -65,9 +65,9 @@ services:
     gpus: all
     environment:
       - ASR_SHERPA_MODEL_DIR=/models/sherpa-onnx/sherpa-onnx-streaming-zipformer-en-2023-06-26
-      - ASR_SHERPA_ENCODER=encoder-epoch-99-avg-1-chunk-16-left-64.onnx
-      - ASR_SHERPA_DECODER=decoder-epoch-99-avg-1-chunk-16-left-64.onnx
-      - ASR_SHERPA_JOINER=joiner-epoch-99-avg-1-chunk-16-left-64.onnx
+      - ASR_SHERPA_ENCODER=encoder-epoch-99-avg-1-chunk-16-left-128.onnx
+      - ASR_SHERPA_DECODER=decoder-epoch-99-avg-1-chunk-16-left-128.onnx
+      - ASR_SHERPA_JOINER=joiner-epoch-99-avg-1-chunk-16-left-128.onnx
       - ASR_SHERPA_TOKENS=tokens.txt
       - ASR_SHERPA_PROVIDER=cpu
       - ASR_SHERPA_NUM_THREADS=2
