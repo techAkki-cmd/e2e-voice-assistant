@@ -1,6 +1,43 @@
 # JarvisLabs Real-Time Voice Assistant
 
-JarvisLabs Real-Time Voice Assistant is an end-to-end spoken AI assistant built with open models. A user speaks into the browser, the system streams audio through ASR, retrieves company knowledge when useful, reasons with Qwen, and streams synthesized speech back to the browser.
+**Live Demo URL:** [Add deployed URL here]  
+**Demo Video Link:** [Add demo video link here]  
+**Sample Audio Clip:** [Add sample audio clip link here]
+
+JarvisLabs Real-Time Voice Assistant is a submission for the **Real-time voice assistant using open models** assignment. It is built as a distributed, interruptible voice system rather than a turn-based text chatbot wrapped in a microphone UI.
+
+## What It Does
+
+This project is an end-to-end real-time voice assistant that lets a user speak through a browser microphone and hear a spoken response without manually moving between ASR, LLM, and TTS stages. The assistant is grounded with retrieval-augmented generation over JarvisLabs support knowledge, keeps short-term conversation memory in Redis, and supports barge-in so the user can interrupt an answer mid-stream. The pipeline uses open models across ASR, reasoning, retrieval embeddings, and TTS.
+
+## Why I Built This
+
+I built this to move beyond the easy version of AI assistants: turn-based text chat. Real voice interaction exposes the harder systems problems: raw streaming audio I/O, low-latency WebSocket delivery, blocking GPU inference loops, concurrent queue routing, interruption control, partial transcripts, final transcript correction, RAG misses, memory persistence, and TTS chunking. The goal was to build something closer to a production voice loop, where the assistant listens, thinks, speaks, and can be interrupted naturally.
+
+## Demo Transcript & Fallback
+
+**Fallback sample audio:** [Add sample audio clip link here]
+
+Expected behavior from a short demo session:
+
+```text
+User: Hello.
+Jarvis: Hello.
+
+User: Can you tell me about JarvisLabs?
+Jarvis: JarvisLabs is a cloud GPU platform for AI workloads like notebooks, model training, inference, and deployment.
+
+User: What is the minimum GPU for a small LLM project on JarvisLabs?
+Jarvis: For small LLM projects, the NVIDIA L4 is a good starting point. For exact pricing and current availability, check the live JarvisLabs dashboard.
+
+User: Who is the lead operator of yours?
+Jarvis: I do not have a specific operator name available. I can still help with JarvisLabs GPU, billing, deployment, and troubleshooting questions.
+
+User: Thank you.
+Jarvis: You're welcome.
+```
+
+This transcript demonstrates greeting fast paths, RAG-grounded JarvisLabs support knowledge, graceful handling of unavailable company-specific facts, and conversational closing.
 
 ## Architecture
 
@@ -78,11 +115,127 @@ flowchart LR
     player --> user
 ```
 
-## Runtime Components
+## Models Used
 
-- Browser frontend streams microphone PCM frames over WebSocket and plays response PCM audio.
-- Spring Boot WebFlux orchestrator multiplexes binary audio, transcript events, response audio, and barge-in control messages.
-- RabbitMQ decouples audio ingress, ASR live transcripts, RAG requests, LLM chunks, TTS synthesis, response audio, and interruption signals.
-- Python GPU workers run ASR, RAG, LLM, and TTS independently.
-- pgvector stores embedded company knowledge for grounded support answers.
-- Redis stores conversation history as `voice:history:{user_id}` with TTL-backed memory.
+| Component | Model / Library | Role |
+|---|---|---|
+| Final ASR | Faster-Whisper `small.en` on CUDA float16 | Produces corrected final transcripts for LLM/RAG turns. |
+| Live ASR | Sherpa ONNX streaming Zipformer | Provides streaming ASR behavior and partial transcript support. |
+| VAD | WebRTCVAD mode 1 with 3.0x digital gain | Detects speech boundaries while preserving quiet/normal speech. |
+| LLM | `Qwen/Qwen2.5-3B-Instruct`, 8-bit quantized | Conversational reasoning, support answers, and general fallback. |
+| TTS | MeloTTS | Converts LLM text chunks into spoken audio. |
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` | Embeds company knowledge for pgvector retrieval. |
+| Memory | Redis | Stores `voice:history:{user_id}` conversation turns with TTL. |
+| Vector DB | pgvector / PostgreSQL | Stores embedded RAG chunks for JarvisLabs support knowledge. |
+
+## Latency Measurements
+
+Fill this table from the final JarvisLabs L4 deployment run using the frontend metrics panel and service logs. Values are intentionally left as placeholders until the final measured run.
+
+| Stage | Measured Latency |
+|---|---:|
+| Speech end to ASR final transcript | TODO ms |
+| RAG retrieval | TODO ms |
+| LLM first token | TODO ms |
+| TTS first audio chunk | TODO ms |
+| Speech end to first spoken response | TODO ms |
+| Full response completion | TODO ms |
+
+## What I Did To Reduce Latency
+
+- **8-bit LLM quantization:** Qwen2.5-3B-Instruct is loaded with bitsandbytes 8-bit quantization to reduce GPU memory pressure and improve responsiveness.
+- **AMQP decoupling:** RabbitMQ separates WebSocket I/O from blocking Python GPU inference loops, so ASR, RAG, LLM, and TTS can run independently.
+- **Voice activity tuning:** WebRTCVAD mode 1, a low RMS floor, minimum speech duration, and pre-roll buffering reduce false drops while keeping turn detection responsive.
+- **Digital microphone gain:** Incoming PCM16 frames are amplified by 3.0x for VAD only, allowing quieter speech to pass speech gating without corrupting the final Whisper audio path.
+- **Streaming token delivery:** The LLM publishes chunks as they are generated instead of waiting for the full answer.
+- **Clause-level TTS streaming:** MeloTTS synthesizes speakable clauses and streams PCM audio directly back to the browser over WebSocket.
+- **Startup warmups:** LLM and TTS workers perform warmup inference so the first real user turn avoids the coldest path.
+- **Direct fast paths:** Greetings, courtesy responses, and simple identity questions bypass full generation when safe.
+- **Barge-in fanout:** User interruption is broadcast through `control.signals` so active LLM/TTS work can stop quickly.
+
+## Architecture Decisions
+
+### Why RabbitMQ?
+
+RabbitMQ decouples non-blocking WebSocket I/O from blocking GPU-bound PyTorch and model inference loops. This keeps the Spring Boot orchestrator responsive while Python workers independently consume and publish audio, transcript, context, text, and synthesized speech messages.
+
+### Why Spring WebFlux?
+
+Spring WebFlux gives the browser-facing layer a reactive WebSocket runtime for high-throughput binary audio frames and text control messages. The orchestrator can multiplex microphone audio, transcript events, response audio, and barge-in control without turning the backend into a blocking servlet-style audio loop.
+
+### Why a Dedicated RAG Worker?
+
+Vector search, embedding, pgvector I/O, and miss sanitization are isolated from LLM generation. This prevents retrieval latency or database issues from blocking Qwen token streaming, and it lets the LLM receive either useful context or a clean empty string when retrieval fails or confidence is low.
+
+### Why Redis Memory?
+
+Redis keeps short conversation history under `voice:history:{user_id}` with TTL, giving the assistant memory across turns without forcing the LLM worker to own durable state. Redis failures are treated as non-fatal so Jarvis can still answer if memory is temporarily unavailable.
+
+### Why pgvector?
+
+pgvector keeps company knowledge inside the same Docker Compose stack and supports fast similarity search over embedded support chunks. It is simple enough for the submission while still representing a real production RAG pattern.
+
+### Why the Barge-in Fanout Exchange?
+
+Barge-in needs to stop multiple independent activities at once: queued TTS text, active TTS synthesis, buffered audio playback, and active LLM generation. A durable fanout exchange broadcasts interruption intent without requiring the orchestrator to track every worker thread or internal generation state.
+
+## How To Run It
+
+### Prerequisites
+
+- Docker and Docker Compose
+- NVIDIA GPU runtime available to Docker
+- A machine with enough GPU memory for ASR, LLM, and TTS workers
+- Browser microphone permission
+
+### Start From a Fresh Build
+
+```bash
+cd ~/e2e-voice-assistant
+
+docker compose -f deploy/docker-compose.yml down
+docker compose -f deploy/docker-compose.yml build --no-cache
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+### Verify Services
+
+```bash
+docker compose -f deploy/docker-compose.yml ps
+docker compose -f deploy/docker-compose.yml logs -f
+```
+
+To inspect only the inference path:
+
+```bash
+docker compose -f deploy/docker-compose.yml logs -f asr-service rag-service llm-service tts-service
+```
+
+### Open the Voice UI
+
+Open the frontend in a browser and connect it to the orchestrator WebSocket:
+
+```text
+http://localhost:8080/api/v1/audio/stream
+```
+
+For local development, open `frontend/index.html` in the browser or serve the frontend with any static file server. In deployment, host the frontend over HTTPS so browser microphone access works reliably.
+
+### RAG Knowledge
+
+The current version uses admin-managed RAG knowledge. Add company documents or seed chunks, ingest them into pgvector, and then start or restart the RAG worker. End-user self-serve document upload is not part of this version.
+
+## What I Used AI For
+
+I used AI assistance for implementation acceleration and review: boilerplate generation, Tailwind UI shaping, prompt iteration, regex suggestions, README polishing, and debugging ideas from logs. I designed and validated the core architecture by hand: the service boundaries, queue topology, WebSocket routing, interruption flow, model selection, Redis memory behavior, RAG graceful-miss behavior, and latency-oriented streaming design.
+
+## What I Would Change With 4 More Weeks
+
+- Add JWT-based WebSocket authentication and per-user authorization.
+- Deploy the frontend and orchestrator behind HTTPS with production-grade TLS, CORS, and origin controls.
+- Add OpenTelemetry traces across WebSocket sessions, RabbitMQ messages, ASR, RAG, LLM, TTS, Redis, and pgvector.
+- Build latency dashboards with per-stage p50, p95, and p99 measurements.
+- Add an authenticated admin upload UI for company PDFs, Markdown, and text files with automatic chunking and re-indexing.
+- Move toward a stronger true streaming conformer/Transducer ASR path as VRAM allows, while keeping Whisper-style final correction.
+- Add automated end-to-end voice regression tests using recorded audio fixtures.
+- Harden secrets management, deployment configuration, health checks, and model cache lifecycle for production.
