@@ -1,10 +1,10 @@
 # JarvisLabs Real-Time Voice Assistant
 
-**Live Demo URL:** [Add deployed URL here]  
+**Live Demo URL:** Generated during review window on request  
 **Demo Video Link:** [Add demo video link here]  
 **Sample Audio Clip:** [Add sample audio clip link here]
 
-The live demo URL is generated during the review window because GPU inference runs on a paid JarvisLabs L4 instance. For no-domain review access, start the stack on the L4 VM and run `cloudflared tunnel --url http://localhost:80`; the generated HTTPS URL becomes the temporary live reviewer link.
+The live demo URL is activated during the review window because GPU inference runs on a paid JarvisLabs L4 instance. For no-domain review access, start the stack on the L4 VM and run `cloudflared tunnel --url http://localhost:80`; the generated HTTPS URL becomes the temporary live reviewer link while the VM and tunnel are running.
 
 JarvisLabs Real-Time Voice Assistant is a submission for the **Real-time voice assistant using open models** assignment. It is built as a distributed, interruptible voice system rather than a turn-based text chatbot wrapped in a microphone UI.
 
@@ -138,11 +138,12 @@ These values were measured from the live browser frontend after deploying throug
 |---|---:|
 | Greeting, speech end to first spoken response | 2.26 s |
 | Courtesy reply, speech end to first spoken response | 2.52 s |
-| Short reply, speech end to latest streamed audio | 2.26-2.52 s |
-| RAG-grounded JarvisLabs question, speech end to first spoken response | TBD |
-| Long answer, full streamed response completion | TBD |
+| RAG-grounded JarvisLabs question, speech end to first spoken response | 3.86 s |
+| RAG-grounded JarvisLabs question, speech end to latest streamed audio | 5.45 s |
+| Long answer, speech end to first spoken response | 3.23 s |
+| Long answer, full streamed response completion | 13.6 s |
 
-The RAG-specific latency is left as `TBD` until a final RAG prompt is measured from the live frontend metrics panel. The short-turn measurements are included because they came directly from the deployed UI logs: `Hello` measured 2264.6 ms TTFB and `Thank you` measured 2518.3 ms TTFB.
+These values are rounded from the live frontend dashboard and represent browser-observed latency through the public HTTPS tunnel. The short-turn measurements came directly from the deployed UI logs: `Hello` measured 2264.6 ms TTFB and `Thank you` measured 2518.3 ms TTFB. The RAG-grounded JarvisLabs prompt measured 3856.5 ms TTFB and 5451.0 ms to latest streamed audio. The long-answer prompt measured 3226.9 ms TTFB and about 13.6 s for streamed response completion.
 
 ## What I Did To Reduce Latency
 
