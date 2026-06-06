@@ -1,10 +1,10 @@
 # JarvisLabs Real-Time Voice Assistant
 
-**Live Demo URL:** Generated during review window on request -https://costs-assure-experience-map.trycloudflare.com/ 
-**Demo Video Link:** [Add demo video link here]  
-**Sample Audio Clip:** [Add sample audio clip link here]
+* ** Live Demo URL:** [https://costs-assure-experience-map.trycloudflare.com/](https://costs-assure-experience-map.trycloudflare.com/)
+* ** Demo Video Link:** *[Add your demo video link here]*
+* ** Sample Audio Clip:** *[Add your sample audio clip link here]*
 
-The live demo URL is activated during the review window because GPU inference runs on a paid JarvisLabs L4 instance. For no-domain review access, start the stack on the L4 VM and run `cloudflared tunnel --url http://localhost:80`; the generated HTTPS URL becomes the temporary live reviewer link while the VM and tunnel are running.
+> **Operational Note for Reviewers:** The live demo URL is activated exclusively during the evaluation window since real-time GPU inference runs on a paid JarvisLabs L4 instance. For no-domain review access, start the full microservices stack on the L4 VM and route traffic using `cloudflared tunnel --url http://localhost:80`. The generated HTTPS URL provides temporary secure reviewer access while the VM runtime and tunnel are active.
 
 JarvisLabs Real-Time Voice Assistant is a **Real-time voice assistant using open models**. It is built as a distributed, interruptible voice system rather than a turn-based text chatbot wrapped in a microphone UI.
 
