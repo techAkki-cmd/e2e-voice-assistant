@@ -35,7 +35,8 @@ public class AsrLiveTranscriptListener {
 
         try {
             JsonNode payload = objectMapper.readTree(message.getBody());
-            if (!"partial".equals(payload.path("type").asText())) {
+            String transcriptType = payload.path("type").asText();
+            if (!"partial".equals(transcriptType) && !"final".equals(transcriptType)) {
                 return;
             }
 
@@ -46,15 +47,16 @@ public class AsrLiveTranscriptListener {
             }
 
             String websocketEvent = objectMapper.createObjectNode()
-                    .put("event", "transcript_partial")
+                    .put("event", "final".equals(transcriptType) ? "transcript_final" : "transcript_partial")
                     .put("text", text)
                     .toString();
             boolean routed = AudioStreamHandler.sendTextToSession(userId, websocketEvent);
             if (!routed) {
-                LOGGER.debug("Dropped ASR partial for missing WebSocket user_id={}", userId);
+                LOGGER.debug("Dropped ASR transcript for missing WebSocket user_id={}", userId);
             } else {
                 LOGGER.debug(
-                        "Routed ASR partial user_id={} traceparent={} text={}",
+                        "Routed ASR {} user_id={} traceparent={} text={}",
+                        transcriptType,
                         userId,
                         traceparent,
                         text

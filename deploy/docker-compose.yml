@@ -75,15 +75,17 @@ services:
       - ASR_SHERPA_RULE2_MIN_TRAILING_SILENCE=1.2
       - ASR_SHERPA_RULE3_MIN_UTTERANCE_LENGTH=20
       - ASR_PARTIAL_THROTTLE_SECONDS=0.15
-      - ASR_MIN_FINAL_AUDIO_SECONDS=0.75
-      - ASR_MIN_FINAL_CHARS=8
-      - ASR_MIN_FINAL_WORDS=2
-      - ASR_ENABLE_FINAL_REFINER=true
-      - ASR_FINAL_REFINER_MODEL=small.en
-      - ASR_FINAL_REFINER_DEVICE=cuda
-      - ASR_FINAL_REFINER_COMPUTE_TYPE=float16
-      - ASR_TRANSCRIPT_REPLACEMENTS=Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;L&M=LLM;L and M=LLM;L.N.=LLM;GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;4GPU=What GPU;geo needs=GPU needs;geo instance=GPU instance
-      - ASR_REJECT_FINAL_PATTERNS=\bENDASPERATED\b;^\s*(?:THANKS FOR WATCHING|PLEASE SUBSCRIBE|SUBSCRIBE)\b
+      - ASR_SPEECH_RMS_THRESHOLD=0.012
+      - ASR_SPEECH_START_FRAMES=3
+      - ASR_PRE_ROLL_MS=250
+      - ASR_TRAILING_SILENCE_MS=900
+      - ASR_MIN_SPEECH_MS=450
+      - ASR_MAX_UTTERANCE_SECONDS=20
+      - ASR_WHISPER_MODEL=small.en
+      - ASR_WHISPER_DEVICE=cuda
+      - ASR_WHISPER_COMPUTE_TYPE=float16
+      - ASR_TRANSCRIPT_REPLACEMENTS=L and M=LLM;L.N.=LLM;GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU
+      - ASR_REJECT_FINAL_PATTERNS=^\s*(?:thanks for watching|thank you for watching|please subscribe|subscribe)\b;\bcommon terms\b;\bjupyter notebook\.?\s+common terms\b
       - HF_HOME=/models/huggingface
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
@@ -103,7 +105,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - LLM_HISTORY_TTL_SECONDS=86400
-      - LLM_MAX_NEW_TOKENS=32
+      - LLM_MAX_NEW_TOKENS=64
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:

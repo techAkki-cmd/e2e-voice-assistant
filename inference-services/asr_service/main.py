@@ -3,9 +3,10 @@ import json
 import os
 import re
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict
+from typing import Deque, Dict
 
 import aio_pika
 import numpy as np
@@ -25,23 +26,22 @@ TEXT_ASR_LIVE_EXCHANGE = "text.asr.live"
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
 PARTIAL_THROTTLE_SECONDS = float(os.getenv("ASR_PARTIAL_THROTTLE_SECONDS", "0.15"))
-MIN_FINAL_AUDIO_SECONDS = float(os.getenv("ASR_MIN_FINAL_AUDIO_SECONDS", "0.75"))
-MIN_FINAL_CHARS = int(os.getenv("ASR_MIN_FINAL_CHARS", "8"))
-MIN_FINAL_WORDS = int(os.getenv("ASR_MIN_FINAL_WORDS", "2"))
-ENABLE_FINAL_REFINER = os.getenv("ASR_ENABLE_FINAL_REFINER", "true").lower() == "true"
-FINAL_REFINER_MODEL = os.getenv("ASR_FINAL_REFINER_MODEL", "small.en")
-FINAL_REFINER_DEVICE = os.getenv("ASR_FINAL_REFINER_DEVICE", "cuda")
-FINAL_REFINER_COMPUTE_TYPE = os.getenv("ASR_FINAL_REFINER_COMPUTE_TYPE", "float16")
-FINAL_REFINER_BEAM_SIZE = int(os.getenv("ASR_FINAL_REFINER_BEAM_SIZE", "5"))
-FINAL_REFINER_INITIAL_PROMPT = os.getenv(
-    "ASR_FINAL_REFINER_INITIAL_PROMPT",
-    (
-        "JarvisLabs voice assistant. Common terms: GPU, GPUs, G P U, GUI, "
-        "graphical user interface, G U I, JarvisLabs dashboard, Jupyter Notebook, "
-        "notebook, terminal, instance, deployment, NVIDIA L4, A100, H100, "
-        "small LLM projects."
-    ),
-)
+
+SPEECH_RMS_THRESHOLD = float(os.getenv("ASR_SPEECH_RMS_THRESHOLD", "0.012"))
+SPEECH_START_FRAMES = int(os.getenv("ASR_SPEECH_START_FRAMES", "3"))
+PRE_ROLL_MS = int(os.getenv("ASR_PRE_ROLL_MS", "250"))
+TRAILING_SILENCE_MS = int(os.getenv("ASR_TRAILING_SILENCE_MS", "900"))
+MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "450"))
+MAX_UTTERANCE_SECONDS = float(os.getenv("ASR_MAX_UTTERANCE_SECONDS", "20"))
+MIN_FINAL_CHARS = int(os.getenv("ASR_MIN_FINAL_CHARS", "3"))
+MIN_FINAL_WORDS = int(os.getenv("ASR_MIN_FINAL_WORDS", "1"))
+
+WHISPER_MODEL_NAME = os.getenv("ASR_WHISPER_MODEL", "small.en")
+WHISPER_DEVICE = os.getenv("ASR_WHISPER_DEVICE", "cuda")
+WHISPER_COMPUTE_TYPE = os.getenv("ASR_WHISPER_COMPUTE_TYPE", "float16")
+WHISPER_BEAM_SIZE = int(os.getenv("ASR_WHISPER_BEAM_SIZE", "5"))
+WHISPER_NO_SPEECH_THRESHOLD = float(os.getenv("ASR_WHISPER_NO_SPEECH_THRESHOLD", "0.72"))
+WHISPER_LOGPROB_THRESHOLD = float(os.getenv("ASR_WHISPER_LOGPROB_THRESHOLD", "-1.15"))
 
 SHERPA_MODEL_DIR = Path(
     os.getenv(
@@ -72,28 +72,33 @@ SHERPA_RULE3_MIN_UTTERANCE_LENGTH = float(os.getenv("ASR_SHERPA_RULE3_MIN_UTTERA
 
 ASR_TRANSCRIPT_REPLACEMENTS = os.getenv(
     "ASR_TRANSCRIPT_REPLACEMENTS",
-    (
-        "Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;"
-        "L&M=LLM;L and M=LLM;L.N.=LLM;"
-        "GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;4GPU=What GPU;"
-        "geo needs=GPU needs;geo instance=GPU instance"
-    ),
+    "L and M=LLM;L.N.=LLM;GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU",
 )
 ASR_REJECT_FINAL_PATTERNS = os.getenv(
     "ASR_REJECT_FINAL_PATTERNS",
-    r"\bENDASPERATED\b;^\s*(?:THANKS FOR WATCHING|PLEASE SUBSCRIBE|SUBSCRIBE)\b",
+    (
+        r"^\s*(?:thanks for watching|thank you for watching|please subscribe|subscribe)\b;"
+        r"\bcommon terms\b;\bjupyter notebook\.?\s+common terms\b;"
+        r"^(.{1,24})(?:\s+\1){2,}$"
+    ),
 )
 
 
 @dataclass
 class StreamingSession:
     stream: object
-    audio_buffer: bytearray = field(default_factory=bytearray)
+    pre_roll_frames: Deque[bytes] = field(default_factory=deque)
+    utterance_buffer: bytearray = field(default_factory=bytearray)
+    in_speech: bool = False
+    consecutive_voiced_frames: int = 0
+    pending_voiced_samples: int = 0
+    speech_samples: int = 0
+    trailing_silence_samples: int = 0
+    utterance_samples: int = 0
     last_partial_text: str = ""
     last_published_partial_text: str = ""
     latest_traceparent: str | None = None
     last_partial_published_at: float = 0.0
-    accepted_sample_count: int = 0
     last_seen_monotonic: float = field(default_factory=time.monotonic)
 
 
@@ -139,15 +144,23 @@ def apply_transcript_replacements(transcript: str) -> str:
     return " ".join(corrected.split())
 
 
-def should_publish_final(transcript: str, audio_seconds: float) -> bool:
+def should_publish_final(transcript: str, segments: list, speech_ms: float) -> bool:
     normalized = " ".join(transcript.strip().split())
     if len(normalized) < MIN_FINAL_CHARS:
         return False
     if len(normalized.split()) < MIN_FINAL_WORDS:
         return False
-    if audio_seconds < MIN_FINAL_AUDIO_SECONDS:
+    if speech_ms < MIN_SPEECH_MS:
         return False
-    return not any(pattern.search(normalized) for pattern in REJECT_FINAL_PATTERNS)
+    if any(pattern.search(normalized) for pattern in REJECT_FINAL_PATTERNS):
+        return False
+
+    if not segments:
+        return False
+
+    worst_no_speech = max(float(getattr(segment, "no_speech_prob", 0.0)) for segment in segments)
+    avg_logprob = sum(float(getattr(segment, "avg_logprob", 0.0)) for segment in segments) / len(segments)
+    return not (worst_no_speech >= WHISPER_NO_SPEECH_THRESHOLD and avg_logprob <= WHISPER_LOGPROB_THRESHOLD)
 
 
 def model_path(filename: str) -> str:
@@ -183,24 +196,19 @@ def load_recognizer():
     return recognizer
 
 
-def load_final_refiner() -> WhisperModel | None:
-    if not ENABLE_FINAL_REFINER:
-        print("[ASR] Final transcript refiner disabled", flush=True)
-        return None
-
+def load_whisper_model() -> WhisperModel:
     print(
-        "[ASR] Loading final transcript refiner "
-        f"model={FINAL_REFINER_MODEL} device={FINAL_REFINER_DEVICE} "
-        f"compute_type={FINAL_REFINER_COMPUTE_TYPE}",
+        "[ASR] Loading authoritative Whisper final ASR "
+        f"model={WHISPER_MODEL_NAME} device={WHISPER_DEVICE} compute_type={WHISPER_COMPUTE_TYPE}",
         flush=True,
     )
     model = WhisperModel(
-        FINAL_REFINER_MODEL,
-        device=FINAL_REFINER_DEVICE,
-        compute_type=FINAL_REFINER_COMPUTE_TYPE,
+        WHISPER_MODEL_NAME,
+        device=WHISPER_DEVICE,
+        compute_type=WHISPER_COMPUTE_TYPE,
         download_root=os.getenv("HF_HOME", "/models/huggingface"),
     )
-    print("[ASR] Final transcript refiner ready", flush=True)
+    print("[ASR] Whisper final ASR ready", flush=True)
     return model
 
 
@@ -210,6 +218,13 @@ def pcm16_to_float32(body: bytes) -> np.ndarray:
         return np.empty(0, dtype=np.float32)
     audio_int16 = np.frombuffer(body[:usable_length], dtype="<i2")
     return audio_int16.astype(np.float32) / 32768.0
+
+
+def frame_rms(samples: np.ndarray) -> float:
+    if samples.size == 0:
+        return 0.0
+    audio = samples.astype(np.float32, copy=False)
+    return float(np.sqrt(np.mean(audio * audio)))
 
 
 def header_as_text(headers: dict | None, name: str) -> str | None:
@@ -238,36 +253,6 @@ def get_result_text(recognizer, stream) -> str:
     return apply_transcript_replacements(str(text).strip())
 
 
-def refine_final_transcript(refiner: WhisperModel | None, audio_bytes: bytes, fallback: str) -> str:
-    if not refiner or not audio_bytes:
-        return fallback
-
-    audio = pcm16_to_float32(audio_bytes)
-    if audio.size == 0:
-        return fallback
-
-    segments, info = refiner.transcribe(
-        audio,
-        language="en",
-        task="transcribe",
-        beam_size=FINAL_REFINER_BEAM_SIZE,
-        condition_on_previous_text=False,
-        initial_prompt=FINAL_REFINER_INITIAL_PROMPT,
-        vad_filter=False,
-    )
-    refined = apply_transcript_replacements(" ".join(segment.text.strip() for segment in segments).strip())
-    if not refined:
-        return fallback
-
-    print(
-        f"[ASR] Refined final transcript: {refined!r}; "
-        f"language={getattr(info, 'language', None)}; "
-        f"language_probability={getattr(info, 'language_probability', None)}",
-        flush=True,
-    )
-    return refined
-
-
 def decode_ready(recognizer, stream) -> None:
     while recognizer.is_ready(stream):
         if hasattr(recognizer, "decode_stream"):
@@ -287,29 +272,106 @@ def session_for(sessions: Dict[str, StreamingSession], recognizer, user_id: str)
     return session
 
 
-def reset_stream(sessions: Dict[str, StreamingSession], recognizer, user_id: str, traceparent: str | None) -> None:
-    session = sessions[user_id]
+def reset_sherpa_stream(session: StreamingSession, recognizer) -> None:
     if hasattr(recognizer, "reset"):
         recognizer.reset(session.stream)
-        stream = session.stream
     else:
-        stream = recognizer.create_stream()
+        session.stream = recognizer.create_stream()
+    session.last_partial_text = ""
+    session.last_published_partial_text = ""
+    session.last_partial_published_at = 0.0
 
-    sessions[user_id] = StreamingSession(
-        stream=stream,
-        latest_traceparent=traceparent,
-        last_seen_monotonic=time.monotonic(),
+
+def reset_speech_gate(session: StreamingSession) -> None:
+    session.pre_roll_frames.clear()
+    session.utterance_buffer = bytearray()
+    session.in_speech = False
+    session.consecutive_voiced_frames = 0
+    session.pending_voiced_samples = 0
+    session.speech_samples = 0
+    session.trailing_silence_samples = 0
+    session.utterance_samples = 0
+
+
+def pre_roll_limit() -> int:
+    frame_ms = 20
+    return max(1, int(round(PRE_ROLL_MS / frame_ms)))
+
+
+def update_speech_gate(session: StreamingSession, body: bytes, samples: np.ndarray, correlation_id: str) -> bool:
+    voiced = frame_rms(samples) >= SPEECH_RMS_THRESHOLD
+    started_this_frame = False
+    session.pre_roll_frames.append(bytes(body))
+    while len(session.pre_roll_frames) > pre_roll_limit():
+        session.pre_roll_frames.popleft()
+
+    if voiced:
+        session.consecutive_voiced_frames += 1
+        session.pending_voiced_samples += int(samples.size)
+    else:
+        session.consecutive_voiced_frames = 0
+        session.pending_voiced_samples = 0
+
+    if not session.in_speech and session.consecutive_voiced_frames >= SPEECH_START_FRAMES:
+        session.in_speech = True
+        session.utterance_buffer = bytearray().join(session.pre_roll_frames)
+        session.utterance_samples = len(session.utterance_buffer) // 2
+        session.speech_samples = session.pending_voiced_samples
+        session.trailing_silence_samples = 0
+        started_this_frame = True
+        print(
+            f"[ASR] Speech gate started; rms={frame_rms(samples):.4f}; "
+            f"correlation_id={correlation_id}; pre_roll_frames={len(session.pre_roll_frames)}",
+            flush=True,
+        )
+        return False
+
+    if not session.in_speech:
+        return False
+
+    if not started_this_frame:
+        session.utterance_buffer.extend(body)
+        session.utterance_samples += int(samples.size)
+
+    if not started_this_frame:
+        if voiced:
+            session.speech_samples += int(samples.size)
+            session.trailing_silence_samples = 0
+        else:
+            session.trailing_silence_samples += int(samples.size)
+
+    trailing_ms = session.trailing_silence_samples * 1000 / SAMPLE_RATE
+    utterance_seconds = session.utterance_samples / SAMPLE_RATE
+    return trailing_ms >= TRAILING_SILENCE_MS or utterance_seconds >= MAX_UTTERANCE_SECONDS
+
+
+def transcribe_whisper(model: WhisperModel, audio_bytes: bytes) -> tuple[str, list]:
+    audio = pcm16_to_float32(audio_bytes)
+    if audio.size == 0:
+        return "", []
+
+    segments_iter, _info = model.transcribe(
+        audio,
+        language="en",
+        task="transcribe",
+        beam_size=WHISPER_BEAM_SIZE,
+        condition_on_previous_text=False,
+        vad_filter=False,
     )
+    segments = list(segments_iter)
+    transcript = apply_transcript_replacements(" ".join(segment.text.strip() for segment in segments).strip())
+    return transcript, segments
 
 
-async def publish_partial(
+async def publish_live_transcript(
     exchange: aio_pika.Exchange,
+    transcript_type: str,
     transcript: str,
     correlation_id: str,
     traceparent: str | None,
 ) -> None:
     payload = {
-        "type": "partial",
+        "type": transcript_type,
         "text": transcript,
         "user_id": correlation_id,
     }
@@ -324,7 +386,7 @@ async def publish_partial(
         routing_key="",
     )
     print(
-        f"[ASR] Published partial transcript: {transcript!r}; "
+        f"[ASR] Published {transcript_type} transcript: {transcript!r}; "
         f"correlation_id={correlation_id}; traceparent={traceparent}",
         flush=True,
     )
@@ -368,7 +430,54 @@ async def maybe_publish_partial(
 
     session.last_published_partial_text = transcript
     session.last_partial_published_at = now
-    await publish_partial(exchange, transcript, correlation_id, session.latest_traceparent)
+    await publish_live_transcript(exchange, "partial", transcript, correlation_id, session.latest_traceparent)
+
+
+async def finalize_utterance(
+    channel: aio_pika.Channel,
+    live_exchange: aio_pika.Exchange,
+    whisper_model: WhisperModel,
+    session: StreamingSession,
+    correlation_id: str,
+) -> None:
+    audio_bytes = bytes(session.utterance_buffer)
+    speech_ms = session.speech_samples * 1000 / SAMPLE_RATE
+    utterance_seconds = session.utterance_samples / SAMPLE_RATE
+    print(
+        f"[ASR] Speech gate finalized; speech_ms={speech_ms:.1f}; "
+        f"audio_seconds={utterance_seconds:.2f}; correlation_id={correlation_id}; "
+        f"traceparent={session.latest_traceparent}",
+        flush=True,
+    )
+
+    if speech_ms < MIN_SPEECH_MS:
+        print(
+            f"[ASR] Dropped non-speech utterance; speech_ms={speech_ms:.1f}; "
+            f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
+            flush=True,
+        )
+        reset_speech_gate(session)
+        return
+
+    transcript, segments = await asyncio.to_thread(transcribe_whisper, whisper_model, audio_bytes)
+    print(
+        f"[ASR] Whisper final transcript: {transcript!r}; segments={len(segments)}; "
+        f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
+        flush=True,
+    )
+
+    if should_publish_final(transcript, segments, speech_ms):
+        await publish_live_transcript(live_exchange, "final", transcript, correlation_id, session.latest_traceparent)
+        await publish_final(channel, transcript, correlation_id, session.latest_traceparent)
+    else:
+        print(
+            f"[ASR] Dropped non-speech utterance; transcript={transcript!r}; "
+            f"speech_ms={speech_ms:.1f}; correlation_id={correlation_id}; "
+            f"traceparent={session.latest_traceparent}",
+            flush=True,
+        )
+
+    reset_speech_gate(session)
 
 
 def cleanup_expired_sessions(sessions: Dict[str, StreamingSession]) -> None:
@@ -381,7 +490,7 @@ def cleanup_expired_sessions(sessions: Dict[str, StreamingSession]) -> None:
 
 async def main() -> None:
     recognizer = load_recognizer()
-    final_refiner = load_final_refiner()
+    whisper_model = load_whisper_model()
     sessions: Dict[str, StreamingSession] = {}
 
     connection = await connect_broker()
@@ -398,7 +507,8 @@ async def main() -> None:
         )
 
         print(
-            f"[ASR] Streaming {AUDIO_INCOMING_QUEUE} as {SAMPLE_RATE} Hz PCM16 into sherpa-onnx...",
+            f"[ASR] Streaming {AUDIO_INCOMING_QUEUE} as {SAMPLE_RATE} Hz PCM16; "
+            "sherpa partials enabled, Whisper finals authoritative.",
             flush=True,
         )
 
@@ -420,8 +530,6 @@ async def main() -> None:
                         await message.ack()
                         continue
 
-                    session.audio_buffer.extend(message.body)
-                    session.accepted_sample_count += int(samples.size)
                     session.stream.accept_waveform(SAMPLE_RATE, samples)
                     decode_ready(recognizer, session.stream)
 
@@ -430,40 +538,11 @@ async def main() -> None:
                     await maybe_publish_partial(live_exchange, session, transcript, correlation_id)
 
                     if recognizer.is_endpoint(session.stream):
-                        final_transcript = transcript or session.last_published_partial_text
-                        audio_seconds = session.accepted_sample_count / SAMPLE_RATE
-                        print(
-                            f"[ASR] Endpoint detected; final={final_transcript!r}; "
-                            f"audio_seconds={audio_seconds:.2f}; "
-                            f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
-                            flush=True,
-                        )
-                        if final_refiner and audio_seconds >= MIN_FINAL_AUDIO_SECONDS:
-                            refined_transcript = await asyncio.to_thread(
-                                refine_final_transcript,
-                                final_refiner,
-                                bytes(session.audio_buffer),
-                                final_transcript,
-                            )
-                            if refined_transcript != final_transcript:
-                                print(
-                                    f"[ASR] Final transcript replaced by refiner: "
-                                    f"sherpa={final_transcript!r}; refined={refined_transcript!r}; "
-                                    f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
-                                    flush=True,
-                                )
-                            final_transcript = refined_transcript
+                        reset_sherpa_stream(session, recognizer)
 
-                        if final_transcript and should_publish_final(final_transcript, audio_seconds):
-                            await publish_final(channel, final_transcript, correlation_id, session.latest_traceparent)
-                        elif final_transcript:
-                            print(
-                                f"[ASR] Dropped rejected final transcript: {final_transcript!r}; "
-                                f"audio_seconds={audio_seconds:.2f}; "
-                                f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
-                                flush=True,
-                            )
-                        reset_stream(sessions, recognizer, correlation_id, session.latest_traceparent)
+                    if update_speech_gate(session, message.body, samples, correlation_id):
+                        await finalize_utterance(channel, live_exchange, whisper_model, session, correlation_id)
+                        reset_sherpa_stream(session, recognizer)
 
                     cleanup_expired_sessions(sessions)
                     await message.ack()

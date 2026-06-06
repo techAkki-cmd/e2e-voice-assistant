@@ -37,9 +37,7 @@ TEXT_TTS_QUEUE = "text.tts.processing"
 CONTROL_SIGNALS_EXCHANGE = "control.signals"
 
 MODEL_NAME = os.getenv("LLM_MODEL_NAME", "Qwen/Qwen2.5-3B-Instruct")
-MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "32"))
-TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
-TOP_P = float(os.getenv("LLM_TOP_P", "0.9"))
+MAX_NEW_TOKENS = int(os.getenv("LLM_MAX_NEW_TOKENS", "64"))
 REPETITION_PENALTY = float(os.getenv("LLM_REPETITION_PENALTY", "1.05"))
 STREAM_FLUSH_CHARS = int(os.getenv("LLM_STREAM_FLUSH_CHARS", "16"))
 HISTORY_TURNS = int(os.getenv("LLM_HISTORY_TURNS", "6"))
@@ -51,28 +49,21 @@ EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS = float(os.getenv("LLM_EMPTY_CONTEXT_GUARD_
 SYSTEM_PROMPT = os.getenv(
     "LLM_SYSTEM_PROMPT",
     (
-        "You are JarvisLabs customer support assistant for a GPU cloud and AI deployment platform. "
-        "Ground every answer in this support scope: GPU instances, CUDA/PyTorch setup, model deployment, "
-        "billing/account help, SSH access, storage, containers, and troubleshooting inference workloads. "
-        "Known safe facts: JarvisLabs provides cloud GPU compute for AI/ML workloads; GPU availability, "
-        "pricing, and exact models can change, so do not invent a live catalog. If asked for exact current "
-        "inventory or pricing, say you can explain the types of GPUs and guide the user to check the live "
-        "JarvisLabs dashboard. If the transcript looks garbled or off-topic, ask one concise clarification. "
-        "Use history and reply with exactly one complete sentence under 18 words, with no follow-up after a "
-        "direct answer. For small LLM GPU guidance, recommend by workload class: start with L4; use A100/H100 "
-        "for larger models or throughput. Do not invent live JarvisLabs GPU inventory, pricing, or availability. "
-        "Do not say goodbye unless the user clearly says goodbye or asks to end the conversation."
+        "You are a concise voice assistant. Answer safe general questions normally. "
+        "For company, product, platform, support, pricing, billing, GPU cloud, or deployment questions, "
+        "use only the retrieved company context. Do not invent company facts, inventory, pricing, or policies. "
+        "Use exactly one complete answer unless the user asks for detail."
     ),
 )
 RAG_CONTEXT_INSTRUCTIONS = os.getenv(
     "LLM_RAG_CONTEXT_INSTRUCTIONS",
     (
-        "Use the retrieved company context below for company/product facts. "
-        "Answer only from that context for JarvisLabs, GPU cloud, deployment, billing, support, or platform questions. "
-        "If the context does not contain the answer, say: I don't know based on the provided company context. "
-        "Do not invent live GPU inventory, pricing, or availability."
+        "Company context is provided below. For company-related questions, answer only from this context. "
+        "If the context lacks the answer, say exactly: I don't know based on the company documents I have."
     ),
 )
+COMPANY_CONTEXT_FALLBACK = "I don't know based on the company documents I have."
+GARBLED_TRANSCRIPT_FALLBACK = "I didn't catch that clearly. Please repeat."
 
 DIRECT_NAME_QUESTION_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -98,26 +89,12 @@ NAME_PATTERNS = [
         r"\bi'm\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|i\s+need|i\s+want|please|can|could)\b)",
     ]
 ]
-DIRECT_GIRLFRIEND_NAME_QUESTION_PATTERNS = [
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in [
-        r"\bwhat(?:'s| is)\s+my\s+girlfriend(?:'s|s)?\s+name\b",
-        r"\btell\s+me\s+my\s+girlfriend(?:'s|s)?\s+name\b",
-        r"\b(?:do\s+you\s+)?remember\s+my\s+girlfriend(?:'s|s)?\s+name\b",
-    ]
-]
 COMPANY_SUPPORT_TOPIC_PATTERN = re.compile(
     r"\b(?:jarvislabs?|gpu|gpus|llm|dashboard|notebook|terminal|instance|deployment|deploy|"
     r"pricing|billing|account|ssh|storage|container|cuda|pytorch|inference|refund|support)\b",
     re.IGNORECASE,
 )
-GIRLFRIEND_NAME_PATTERNS = [
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in [
-        r"\bmy\s+girlfriend(?:'s|s)?\s+name\s+is\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|please|can|could)\b)",
-        r"\bher\s+name\s+is\s+([A-Za-z][A-Za-z' -]{0,60}?)(?=$|[.!?,;:]|\s+(?:and|but|so|because|please|can|could)\b)",
-    ]
-]
+GARBLED_TOKEN_PATTERN = re.compile(r"\b[A-Z]{4,}\b")
 REJECTED_NAME_VALUES = {
     "asking",
     "checking",
@@ -194,7 +171,7 @@ def load_model():
     model.eval()
     if LLM_WARMUP_ENABLED:
         print("[LLM] Running startup warmup generation...", flush=True)
-        inputs = build_inputs(tokenizer, model, [], "Say ready.", "")
+        inputs = build_inputs(tokenizer, model, [], "Say ready.", "", False)
         with torch.inference_mode():
             model.generate(
                 **inputs,
@@ -207,13 +184,12 @@ def load_model():
     return tokenizer, model
 
 
-def build_system_prompt(retrieved_context: str) -> str:
+def build_system_prompt(retrieved_context: str, is_company_question: bool) -> str:
+    if not is_company_question:
+        return SYSTEM_PROMPT
+
     context = retrieved_context.strip() or "No relevant company context was retrieved."
-    return (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"{RAG_CONTEXT_INSTRUCTIONS}\n\n"
-        f"Retrieved company context:\n{context}"
-    )
+    return f"{SYSTEM_PROMPT}\n\n{RAG_CONTEXT_INSTRUCTIONS}\n\nRetrieved company context:\n{context}"
 
 
 def parse_rag_payload(body: bytes) -> tuple[str, str]:
@@ -239,9 +215,9 @@ def parse_rag_payload(body: bytes) -> tuple[str, str]:
     return user_transcript.strip(), retrieved_context.strip()
 
 
-def build_inputs(tokenizer, model, history: List[dict], user_text: str, retrieved_context: str):
+def build_inputs(tokenizer, model, history: List[dict], user_text: str, retrieved_context: str, is_company_question: bool):
     messages = [
-        {"role": "system", "content": build_system_prompt(retrieved_context)},
+        {"role": "system", "content": build_system_prompt(retrieved_context, is_company_question)},
         *history,
         {"role": "user", "content": user_text.strip()},
     ]
@@ -268,18 +244,17 @@ async def stream_response_chunks(
     history: List[dict],
     user_text: str,
     retrieved_context: str,
+    is_company_question: bool,
     stop_event: threading.Event,
 ) -> AsyncIterator[str]:
-    inputs = build_inputs(tokenizer, model, history, user_text, retrieved_context)
+    inputs = build_inputs(tokenizer, model, history, user_text, retrieved_context, is_company_question)
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=1.0)
 
     generation_kwargs = {
         **inputs,
         "streamer": streamer,
         "max_new_tokens": MAX_NEW_TOKENS,
-        "temperature": TEMPERATURE,
-        "top_p": TOP_P,
-        "do_sample": True,
+        "do_sample": False,
         "repetition_penalty": REPETITION_PENALTY,
         "pad_token_id": tokenizer.eos_token_id,
         "eos_token_id": tokenizer.eos_token_id,
@@ -389,12 +364,19 @@ def is_direct_greeting(user_text: str) -> bool:
     return any(pattern.match(user_text) for pattern in DIRECT_GREETING_PATTERNS)
 
 
-def is_direct_girlfriend_name_question(user_text: str) -> bool:
-    return any(pattern.search(user_text) for pattern in DIRECT_GIRLFRIEND_NAME_QUESTION_PATTERNS)
-
-
 def is_company_support_question(user_text: str) -> bool:
     return bool(COMPANY_SUPPORT_TOPIC_PATTERN.search(user_text))
+
+
+def looks_garbled(user_text: str) -> bool:
+    text = user_text.strip()
+    if not text:
+        return True
+    words = text.split()
+    if len(words) >= 4 and sum(1 for word in words if GARBLED_TOKEN_PATTERN.fullmatch(word.strip(".,!?"))) >= 3:
+        return True
+    alpha_chars = sum(1 for character in text if character.isalpha())
+    return alpha_chars < 3
 
 
 def extract_latest_user_name(history: List[dict], current_transcript: str) -> str | None:
@@ -404,21 +386,6 @@ def extract_latest_user_name(history: List[dict], current_transcript: str) -> st
 
     for text in user_texts:
         for pattern in NAME_PATTERNS:
-            for match in pattern.finditer(text):
-                name = normalize_name(match.group(1))
-                if name:
-                    latest_name = name
-
-    return latest_name
-
-
-def extract_latest_girlfriend_name(history: List[dict], current_transcript: str) -> str | None:
-    latest_name = None
-    user_texts = [item["content"] for item in history if item.get("role") == "user"]
-    user_texts.append(current_transcript)
-
-    for text in user_texts:
-        for pattern in GIRLFRIEND_NAME_PATTERNS:
             for match in pattern.finditer(text):
                 name = normalize_name(match.group(1))
                 if name:
@@ -561,7 +528,7 @@ async def main() -> None:
 
                             response_id = uuid.uuid4().hex
                             remembered_name = extract_latest_user_name(history, user_text)
-                            remembered_girlfriend_name = extract_latest_girlfriend_name(history, user_text)
+                            is_company_question = is_company_support_question(user_text)
                             if is_direct_greeting(user_text):
                                 assistant_text = f"Hello {remembered_name}." if remembered_name else "Hello."
                                 await publish_text_chunk(
@@ -614,33 +581,8 @@ async def main() -> None:
                                 cleanup_interrupted_state(interrupted_at)
                                 await message.ack()
                                 continue
-                            if is_direct_girlfriend_name_question(user_text) and remembered_girlfriend_name:
-                                assistant_text = f"Your girlfriend's name is {remembered_girlfriend_name}."
-                                await publish_text_chunk(
-                                    channel,
-                                    assistant_text,
-                                    correlation_id,
-                                    traceparent,
-                                    response_id,
-                                )
-                                await save_history(
-                                    redis_client,
-                                    user_id,
-                                    [
-                                        *history,
-                                        {"role": "user", "content": user_text},
-                                        {"role": "assistant", "content": assistant_text},
-                                    ],
-                                )
-                                print(
-                                    f"[LLM] Published direct memory answer: {assistant_text!r}; "
-                                    f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
-                                    flush=True,
-                                )
-                                cleanup_interrupted_state(interrupted_at)
-                                await message.ack()
-                                continue
-                            if not retrieved_context:
+
+                            if looks_garbled(user_text) or (is_company_question and not retrieved_context):
                                 last_guard_at = empty_context_guarded_at.get(user_id)
                                 now = time.monotonic()
                                 if last_guard_at is not None and now - last_guard_at < EMPTY_CONTEXT_GUARD_COOLDOWN_SECONDS:
@@ -658,9 +600,9 @@ async def main() -> None:
 
                                 empty_context_guarded_at[user_id] = now
                                 assistant_text = (
-                                    "I didn't catch that clearly. Please repeat your question."
-                                    if not is_company_support_question(user_text)
-                                    else "I don't know based on the provided company context."
+                                    COMPANY_CONTEXT_FALLBACK
+                                    if is_company_question and not retrieved_context
+                                    else GARBLED_TRANSCRIPT_FALLBACK
                                 )
                                 await publish_text_chunk(
                                     channel,
@@ -679,7 +621,7 @@ async def main() -> None:
                                     ],
                                 )
                                 print(
-                                    f"[LLM] Published empty-context guard answer: {assistant_text!r}; "
+                                    f"[LLM] Published guard answer: {assistant_text!r}; "
                                     f"correlation_id={correlation_id}; response_id={response_id}; traceparent={traceparent}",
                                     flush=True,
                                 )
@@ -703,6 +645,7 @@ async def main() -> None:
                                 history,
                                 user_text,
                                 retrieved_context,
+                                is_company_question,
                                 stop_event,
                             ):
                                 if stop_event.is_set():

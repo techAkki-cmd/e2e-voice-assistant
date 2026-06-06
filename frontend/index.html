@@ -748,6 +748,12 @@
           log(`ASR partial: ${event.text}`, "rx");
           return;
         }
+        if (event.event === "transcript_final" && typeof event.text === "string") {
+          setLiveTranscript(event.text);
+          elements.liveTranscriptStatus.textContent = "final";
+          log(`ASR final: ${event.text}`, "ok");
+          return;
+        }
       } catch (_) {
         // Fall through to the warning below.
       }
