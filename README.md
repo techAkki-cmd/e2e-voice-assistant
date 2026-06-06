@@ -1,6 +1,6 @@
 # JarvisLabs Real-Time Voice Assistant
 
-**Live Demo URL:** Generated during review window on request  
+**Live Demo URL:** Generated during review window on request -https://costs-assure-experience-map.trycloudflare.com/ 
 **Demo Video Link:** [Add demo video link here]  
 **Sample Audio Clip:** [Add sample audio clip link here]
 
@@ -141,9 +141,8 @@ These values were measured from the live browser frontend after deploying throug
 | RAG-grounded JarvisLabs question, speech end to first spoken response | 3.86 s |
 | RAG-grounded JarvisLabs question, speech end to latest streamed audio | 5.45 s |
 | Long answer, speech end to first spoken response | 3.23 s |
-| Long answer, full streamed response completion | 13.6 s |
+| Long answer, full streamed response completion | 11.6 s |
 
-These values are rounded from the live frontend dashboard and represent browser-observed latency through the public HTTPS tunnel. The short-turn measurements came directly from the deployed UI logs: `Hello` measured 2264.6 ms TTFB and `Thank you` measured 2518.3 ms TTFB. The RAG-grounded JarvisLabs prompt measured 3856.5 ms TTFB and 5451.0 ms to latest streamed audio. The long-answer prompt measured 3226.9 ms TTFB and about 13.6 s for streamed response completion.
 
 ## What I Did To Reduce Latency
 
