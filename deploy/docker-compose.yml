@@ -75,16 +75,16 @@ services:
       - ASR_SHERPA_RULE2_MIN_TRAILING_SILENCE=1.2
       - ASR_SHERPA_RULE3_MIN_UTTERANCE_LENGTH=20
       - ASR_SPEECH_RMS_THRESHOLD=0.012
-      - ASR_SPEECH_START_FRAMES=3
+      - ASR_SPEECH_START_FRAMES=4
       - ASR_PRE_ROLL_MS=250
-      - ASR_TRAILING_SILENCE_MS=900
-      - ASR_MIN_SPEECH_MS=450
+      - ASR_TRAILING_SILENCE_MS=1500
+      - ASR_MIN_SPEECH_MS=700
       - ASR_MAX_UTTERANCE_SECONDS=20
       - ASR_WHISPER_MODEL=small.en
       - ASR_WHISPER_DEVICE=cuda
       - ASR_WHISPER_COMPUTE_TYPE=float16
       - ASR_TRANSCRIPT_REPLACEMENTS=L and M=LLM;L.N.=LLM;GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU
-      - ASR_REJECT_FINAL_PATTERNS=^\s*(?:thanks for watching|thank you for watching|please subscribe|subscribe)\b;\bcommon terms\b;\bjupyter notebook\.?\s+common terms\b
+      - ASR_REJECT_FINAL_PATTERNS=^\s*(?:thanks for watching|thank you for watching|please subscribe|subscribe)\b;\bcommon terms\b;\bjupyter notebook\.?\s+common terms\b;\bciao\s+out\s+of\s+base\b;\bout\s+of\s+base\b
       - HF_HOME=/models/huggingface
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility

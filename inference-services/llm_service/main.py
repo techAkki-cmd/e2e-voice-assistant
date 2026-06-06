@@ -91,7 +91,9 @@ NAME_PATTERNS = [
 ]
 COMPANY_SUPPORT_TOPIC_PATTERN = re.compile(
     r"\b(?:jarvislabs?|gpu|gpus|llm|dashboard|notebook|terminal|instance|deployment|deploy|"
-    r"pricing|billing|account|ssh|storage|container|cuda|pytorch|inference|refund|support)\b",
+    r"pricing|billing|account|ssh|storage|container|cuda|pytorch|inference|refund|support|"
+    r"company|companies|platform|product|service|services|feature|features|policy|policies|"
+    r"document|documents|documentation|docs|terms)\b",
     re.IGNORECASE,
 )
 GARBLED_TOKEN_PATTERN = re.compile(r"\b[A-Z]{4,}\b")
@@ -371,6 +373,8 @@ def is_company_support_question(user_text: str) -> bool:
 def looks_garbled(user_text: str) -> bool:
     text = user_text.strip()
     if not text:
+        return True
+    if text.endswith("..."):
         return True
     words = text.split()
     if len(words) >= 4 and sum(1 for word in words if GARBLED_TOKEN_PATTERN.fullmatch(word.strip(".,!?"))) >= 3:

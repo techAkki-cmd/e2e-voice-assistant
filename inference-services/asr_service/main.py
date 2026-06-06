@@ -26,10 +26,10 @@ TEXT_ASR_LIVE_EXCHANGE = "text.asr.live"
 SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 SESSION_TTL_SECONDS = int(os.getenv("ASR_SESSION_TTL_SECONDS", "120"))
 SPEECH_RMS_THRESHOLD = float(os.getenv("ASR_SPEECH_RMS_THRESHOLD", "0.012"))
-SPEECH_START_FRAMES = int(os.getenv("ASR_SPEECH_START_FRAMES", "3"))
+SPEECH_START_FRAMES = int(os.getenv("ASR_SPEECH_START_FRAMES", "4"))
 PRE_ROLL_MS = int(os.getenv("ASR_PRE_ROLL_MS", "250"))
-TRAILING_SILENCE_MS = int(os.getenv("ASR_TRAILING_SILENCE_MS", "900"))
-MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "450"))
+TRAILING_SILENCE_MS = int(os.getenv("ASR_TRAILING_SILENCE_MS", "1500"))
+MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "700"))
 MAX_UTTERANCE_SECONDS = float(os.getenv("ASR_MAX_UTTERANCE_SECONDS", "20"))
 MIN_FINAL_CHARS = int(os.getenv("ASR_MIN_FINAL_CHARS", "3"))
 MIN_FINAL_WORDS = int(os.getenv("ASR_MIN_FINAL_WORDS", "1"))
@@ -77,6 +77,7 @@ ASR_REJECT_FINAL_PATTERNS = os.getenv(
     (
         r"^\s*(?:thanks for watching|thank you for watching|please subscribe|subscribe)\b;"
         r"\bcommon terms\b;\bjupyter notebook\.?\s+common terms\b;"
+        r"\bciao\s+out\s+of\s+base\b;\bout\s+of\s+base\b;"
         r"^(.{1,24})(?:\s+\1){2,}$"
     ),
 )
@@ -148,6 +149,8 @@ def should_publish_final(transcript: str, segments: list, speech_ms: float) -> b
     if speech_ms < MIN_SPEECH_MS:
         return False
     if any(pattern.search(normalized) for pattern in REJECT_FINAL_PATTERNS):
+        return False
+    if normalized.endswith("..."):
         return False
 
     if not segments:
@@ -378,7 +381,7 @@ async def publish_live_transcript(
         routing_key="",
     )
     print(
-        f"[ASR] Published {transcript_type} transcript: {transcript!r}; "
+        f"[ASR] Published live {transcript_type} transcript: {transcript!r}; "
         f"correlation_id={correlation_id}; traceparent={traceparent}",
         flush=True,
     )
@@ -401,7 +404,7 @@ async def publish_final(
         routing_key=TEXT_RAG_QUEUE,
     )
     print(
-        f"[ASR] Published final transcript: {transcript!r}; "
+        f"[ASR] Published RAG final transcript: {transcript!r}; "
         f"correlation_id={correlation_id}; traceparent={traceparent}",
         flush=True,
     )

@@ -101,8 +101,8 @@
   </style>
 </head>
 <body class="h-screen overflow-hidden text-slate-100 antialiased">
-  <main class="mx-auto flex h-screen max-h-screen w-full max-w-[1500px] flex-col gap-5 overflow-hidden px-5 py-5 lg:px-7">
-    <header class="glass shrink-0 flex flex-col justify-between gap-4 rounded-lg px-5 py-4 md:flex-row md:items-center">
+  <main class="mx-auto flex h-screen max-h-screen w-full max-w-[1500px] flex-col gap-5 overflow-hidden">
+    <header class="glass mx-6 mt-6 shrink-0 flex flex-col justify-between gap-4 rounded-lg px-5 py-4 md:flex-row md:items-center">
       <div>
         <div class="flex items-center gap-3">
           <div class="flex h-10 w-10 items-center justify-center rounded-md border border-cyan-400/25 bg-cyan-400/10 text-cyan-300">
@@ -126,36 +126,38 @@
       </div>
     </header>
 
-    <section class="grid min-h-0 flex-1 gap-5 overflow-hidden lg:grid-cols-[1.05fr_0.95fr]">
-      <section class="glass panel-grid flex min-h-0 items-center justify-center overflow-hidden rounded-lg p-5">
-        <div class="w-full max-w-xl rounded-lg border border-slate-700/70 bg-slate-950/80 p-6 shadow-glow">
-          <div class="mb-6 flex items-start justify-between gap-4">
-            <div>
-              <p class="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300">Voice Interface</p>
-              <h2 class="mt-2 text-2xl font-semibold text-white">Live Audio Stream</h2>
+    <section class="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-hidden p-6 lg:grid-cols-2">
+      <section class="glass panel-grid flex min-h-0 flex-col overflow-y-auto rounded-xl border border-gray-800 bg-gray-900/40 p-6">
+        <div class="flex w-full flex-col gap-6">
+          <div class="rounded-lg border border-slate-700/70 bg-slate-950/80 p-6 shadow-glow">
+            <div class="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-[0.22em] text-cyan-300">Voice Interface</p>
+                <h2 class="mt-2 text-2xl font-semibold text-white">Live Audio Stream</h2>
+              </div>
+              <span id="stateBadge" class="inline-flex shrink-0 items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300">
+                <span id="stateDot" class="h-2 w-2 rounded-full bg-slate-500"></span>
+                <span id="stateText">Disconnected</span>
+              </span>
             </div>
-            <span id="stateBadge" class="inline-flex shrink-0 items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-300">
-              <span id="stateDot" class="h-2 w-2 rounded-full bg-slate-500"></span>
-              <span id="stateText">Disconnected</span>
-            </span>
+
+            <div class="flex flex-col items-center">
+              <button
+                id="micButton"
+                type="button"
+                aria-label="Start voice session"
+                class="group relative flex h-36 w-36 items-center justify-center rounded-full border border-cyan-300/25 bg-gradient-to-br from-slate-800 via-slate-950 to-cyan-950 text-cyan-200 shadow-glow transition hover:border-cyan-300/60 hover:text-white focus:outline-none focus:ring-4 focus:ring-cyan-400/20"
+              >
+                <span class="absolute inset-4 rounded-full border border-white/10"></span>
+                <i id="micIcon" data-lucide="mic" class="relative h-14 w-14"></i>
+              </button>
+
+              <p id="actionHint" class="mt-5 text-sm text-slate-400">Click to connect and start streaming microphone audio.</p>
+              <p id="errorText" class="mt-3 hidden max-w-md text-center text-sm font-medium text-red-300"></p>
+            </div>
           </div>
 
-          <div class="flex flex-col items-center">
-            <button
-              id="micButton"
-              type="button"
-              aria-label="Start voice session"
-              class="group relative flex h-36 w-36 items-center justify-center rounded-full border border-cyan-300/25 bg-gradient-to-br from-slate-800 via-slate-950 to-cyan-950 text-cyan-200 shadow-glow transition hover:border-cyan-300/60 hover:text-white focus:outline-none focus:ring-4 focus:ring-cyan-400/20"
-            >
-              <span class="absolute inset-4 rounded-full border border-white/10"></span>
-              <i id="micIcon" data-lucide="mic" class="relative h-14 w-14"></i>
-            </button>
-
-            <p id="actionHint" class="mt-5 text-sm text-slate-400">Click to connect and start streaming microphone audio.</p>
-            <p id="errorText" class="mt-3 hidden max-w-md text-center text-sm font-medium text-red-300"></p>
-          </div>
-
-          <div class="mt-6 rounded-lg border border-cyan-400/20 bg-cyan-950/10 p-3">
+          <div class="rounded-lg border border-cyan-400/20 bg-cyan-950/10 p-4">
             <div class="mb-2 flex items-center justify-between">
               <span class="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-cyan-300">
                 <i data-lucide="captions" class="h-4 w-4"></i>
@@ -166,7 +168,7 @@
             <div id="liveTranscript" class="min-h-10 text-sm leading-6 text-slate-200"></div>
           </div>
 
-          <div class="mt-8 rounded-lg border border-slate-800 bg-black/50 p-3 scanline">
+          <div class="min-h-[200px] shrink-0 rounded-lg border border-slate-800 bg-black/50 p-4 scanline">
             <div class="mb-3 flex items-center justify-between px-1">
               <span class="inline-flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-slate-400">
                 <i data-lucide="waves" class="h-4 w-4 text-cyan-300"></i>
@@ -174,12 +176,12 @@
               </span>
               <span id="visualizerMode" class="text-xs text-slate-500">idle</span>
             </div>
-            <canvas id="waveCanvas" width="900" height="280" class="h-56 w-full rounded-md bg-slate-950"></canvas>
+            <canvas id="waveCanvas" width="900" height="280" class="h-[200px] w-full rounded-md bg-slate-950"></canvas>
           </div>
         </div>
       </section>
 
-      <section class="glass flex min-h-0 flex-col overflow-hidden rounded-lg p-5">
+      <section class="glass flex min-h-0 flex-col overflow-y-auto rounded-xl border border-gray-800 bg-gray-900/40 p-6">
         <div class="mb-5 flex shrink-0 items-center justify-between gap-4">
           <div>
             <p class="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">Network Observability</p>
@@ -413,7 +415,7 @@
 
     function setLiveTranscript(text) {
       elements.liveTranscript.textContent = text;
-      elements.liveTranscriptStatus.textContent = text ? "streaming" : "idle";
+      elements.liveTranscriptStatus.textContent = text ? "final" : "idle";
     }
 
     function clearLiveTranscript() {
@@ -745,7 +747,6 @@
         const event = JSON.parse(payload);
         if (event.event === "transcript_final" && typeof event.text === "string") {
           setLiveTranscript(event.text);
-          elements.liveTranscriptStatus.textContent = "final";
           log(`ASR final: ${event.text}`, "ok");
           return;
         }
