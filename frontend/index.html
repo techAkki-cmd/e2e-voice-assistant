@@ -247,7 +247,8 @@
   </main>
 
   <script>
-    const WS_BASE_URL = "ws://localhost:8080/api/v1/audio/stream";
+    const LOCAL_WS_BASE_URL = "ws://localhost:8080/api/v1/audio/stream";
+    const WS_PATH = "/api/v1/audio/stream";
     const INPUT_SAMPLE_RATE = 16000;
     const INPUT_FRAME_MS = 20;
     const INPUT_FRAME_BYTES = 640;
@@ -430,12 +431,19 @@
     function resolveWebSocketUrl() {
       const pageParams = new URLSearchParams(window.location.search);
       const userId = pageParams.get("user_id");
-      if (!userId || !userId.trim()) {
-        return WS_BASE_URL;
+
+      let wsUrl;
+      const isLocalHost = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
+      if (window.location.protocol === "file:" || isLocalHost) {
+        wsUrl = new URL(LOCAL_WS_BASE_URL);
+      } else {
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        wsUrl = new URL(WS_PATH, `${wsProtocol}//${window.location.host}`);
       }
 
-      const wsUrl = new URL(WS_BASE_URL);
-      wsUrl.searchParams.set("user_id", userId.trim());
+      if (userId && userId.trim()) {
+        wsUrl.searchParams.set("user_id", userId.trim());
+      }
       return wsUrl.toString();
     }
 

@@ -208,18 +208,34 @@ docker compose -f deploy/docker-compose.yml logs -f
 To inspect only the inference path:
 
 ```bash
-docker compose -f deploy/docker-compose.yml logs -f asr-service rag-service llm-service tts-service
+docker compose -f deploy/docker-compose.yml logs -f asr-service rag-service llm-service tts-service orchestrator frontend-proxy
 ```
 
 ### Open the Voice UI
 
-Open the frontend in a browser and connect it to the orchestrator WebSocket:
+Open the Nginx-served frontend:
 
 ```text
-http://localhost:8080/api/v1/audio/stream
+http://localhost
 ```
 
-For local development, open `frontend/index.html` in the browser or serve the frontend with any static file server. In deployment, host the frontend over HTTPS so browser microphone access works reliably.
+For local development, opening `frontend/index.html` directly still connects to `ws://localhost:8080/api/v1/audio/stream`. For deployment, serve the frontend through the `frontend-proxy` service so the browser loads the UI and uses a same-origin WebSocket path.
+
+### Public Reviewer Link
+
+For a no-domain grading link on the JarvisLabs L4 VM, expose the Nginx frontend with Cloudflare Tunnel:
+
+```bash
+cloudflared tunnel --url http://localhost:80
+```
+
+Use the generated `https://...trycloudflare.com` URL as the **Live Demo URL**. When the frontend is loaded over HTTPS, it automatically connects to:
+
+```text
+wss://<public-host>/api/v1/audio/stream
+```
+
+This keeps microphone access browser-compatible and preserves the original WebSocket, RabbitMQ, ASR, RAG, LLM, TTS, Redis, and pgvector runtime.
 
 ### RAG Knowledge
 

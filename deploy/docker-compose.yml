@@ -65,6 +65,19 @@ services:
     networks:
       - e2e-network
 
+  frontend-proxy:
+    image: nginx:alpine
+    container_name: e2e-frontend-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ../frontend:/usr/share/nginx/html:ro
+      - ./nginx-frontend.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - orchestrator
+    networks:
+      - e2e-network
+
   asr-service:
     build: ../inference-services/asr_service
     container_name: e2e-asr-service
