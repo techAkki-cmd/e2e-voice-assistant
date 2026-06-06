@@ -30,11 +30,12 @@ SPEECH_START_FRAMES = int(os.getenv("ASR_SPEECH_START_FRAMES", "4"))
 PRE_ROLL_MS = int(os.getenv("ASR_PRE_ROLL_MS", "250"))
 TRAILING_SILENCE_MS = int(os.getenv("ASR_TRAILING_SILENCE_MS", "2200"))
 MIN_SPEECH_MS = int(os.getenv("ASR_MIN_SPEECH_MS", "700"))
-MAX_UTTERANCE_SECONDS = float(os.getenv("ASR_MAX_UTTERANCE_SECONDS", "20"))
+MAX_UTTERANCE_SECONDS = float(os.getenv("ASR_MAX_UTTERANCE_SECONDS", "12"))
 MIN_FINAL_CHARS = int(os.getenv("ASR_MIN_FINAL_CHARS", "3"))
 MIN_FINAL_WORDS = int(os.getenv("ASR_MIN_FINAL_WORDS", "1"))
 VAD_GAIN = float(os.getenv("ASR_VAD_GAIN", "3.0"))
 VAD_AGGRESSIVENESS = int(os.getenv("ASR_VAD_AGGRESSIVENESS", "1"))
+MIN_VAD_RMS = float(os.getenv("ASR_MIN_VAD_RMS", "0.0025"))
 
 WHISPER_MODEL_NAME = os.getenv("ASR_WHISPER_MODEL", "small.en")
 WHISPER_DEVICE = os.getenv("ASR_WHISPER_DEVICE", "cuda")
@@ -255,6 +256,11 @@ def frame_rms(samples: np.ndarray) -> float:
     return float(np.sqrt(np.mean(audio * audio)))
 
 
+def is_voiced_frame(vad: webrtcvad.Vad, body: bytes, samples: np.ndarray) -> tuple[bool, float]:
+    rms = frame_rms(samples)
+    return vad_is_speech(vad, body) and rms >= MIN_VAD_RMS, rms
+
+
 def header_as_text(headers: dict | None, name: str) -> str | None:
     if not headers:
         return None
@@ -330,7 +336,7 @@ def update_speech_gate(
     samples: np.ndarray,
     correlation_id: str,
 ) -> bool:
-    voiced = vad_is_speech(vad, body)
+    voiced, rms = is_voiced_frame(vad, body, samples)
     started_this_frame = False
     session.pre_roll_frames.append(bytes(body))
     while len(session.pre_roll_frames) > pre_roll_limit():
@@ -351,7 +357,8 @@ def update_speech_gate(
         session.trailing_silence_samples = 0
         started_this_frame = True
         print(
-            f"[ASR] Speech gate started; vad_mode={VAD_AGGRESSIVENESS}; rms={frame_rms(samples):.4f}; "
+            f"[ASR] Speech gate started; vad_mode={VAD_AGGRESSIVENESS}; rms={rms:.4f}; "
+            f"min_vad_rms={MIN_VAD_RMS:.4f}; "
             f"correlation_id={correlation_id}; pre_roll_frames={len(session.pre_roll_frames)}",
             flush=True,
         )
