@@ -4,6 +4,8 @@
 **Demo Video Link:** [Add demo video link here]  
 **Sample Audio Clip:** [Add sample audio clip link here]
 
+The live demo URL is generated during the review window because GPU inference runs on a paid JarvisLabs L4 instance. For no-domain review access, start the stack on the L4 VM and run `cloudflared tunnel --url http://localhost:80`; the generated HTTPS URL becomes the temporary live reviewer link.
+
 JarvisLabs Real-Time Voice Assistant is a submission for the **Real-time voice assistant using open models** assignment. It is built as a distributed, interruptible voice system rather than a turn-based text chatbot wrapped in a microphone UI.
 
 ## What It Does
@@ -130,16 +132,17 @@ flowchart LR
 
 ## Latency Measurements
 
-Fill this table from the final JarvisLabs L4 deployment run using the frontend metrics panel and service logs. Values are intentionally left as placeholders until the final measured run.
+These values were measured from the live browser frontend after deploying through the `frontend-proxy` service and Cloudflare Tunnel on a JarvisLabs L4 instance. `Speech-End TTFB` measures from detected speech end to the first received assistant audio frame. `Turn Response Latency` in the UI means speech end to the latest streamed audio received so far, so it grows while a longer answer is still playing.
 
-| Stage | Measured Latency |
+| Scenario / Stage | Measured Latency |
 |---|---:|
-| Speech end to ASR final transcript | TODO ms |
-| RAG retrieval | TODO ms |
-| LLM first token | TODO ms |
-| TTS first audio chunk | TODO ms |
-| Speech end to first spoken response | TODO ms |
-| Full response completion | TODO ms |
+| Greeting, speech end to first spoken response | 2.26 s |
+| Courtesy reply, speech end to first spoken response | 2.52 s |
+| Short reply, speech end to latest streamed audio | 2.26-2.52 s |
+| RAG-grounded JarvisLabs question, speech end to first spoken response | TBD |
+| Long answer, full streamed response completion | TBD |
+
+The RAG-specific latency is left as `TBD` until a final RAG prompt is measured from the live frontend metrics panel. The short-turn measurements are included because they came directly from the deployed UI logs: `Hello` measured 2264.6 ms TTFB and `Thank you` measured 2518.3 ms TTFB.
 
 ## What I Did To Reduce Latency
 
@@ -147,8 +150,9 @@ Fill this table from the final JarvisLabs L4 deployment run using the frontend m
 - **AMQP decoupling:** RabbitMQ separates WebSocket I/O from blocking Python GPU inference loops, so ASR, RAG, LLM, and TTS can run independently.
 - **Voice activity tuning:** WebRTCVAD mode 1, a low RMS floor, minimum speech duration, and pre-roll buffering reduce false drops while keeping turn detection responsive.
 - **Digital microphone gain:** Incoming PCM16 frames are amplified by 3.0x for VAD only, allowing quieter speech to pass speech gating without corrupting the final Whisper audio path.
+- **Final ASR pause tuning:** The deployed stack uses `ASR_TRAILING_SILENCE_MS=1350` to reduce post-speech waiting time without making normal sentence pauses too brittle.
 - **Streaming token delivery:** The LLM publishes chunks as they are generated instead of waiting for the full answer.
-- **Clause-level TTS streaming:** MeloTTS synthesizes speakable clauses and streams PCM audio directly back to the browser over WebSocket.
+- **Clause-level TTS streaming:** MeloTTS synthesizes speakable clauses and streams PCM audio directly back to the browser over WebSocket, with `TTS_SOFT_CLAUSE_WORDS=6` and `TTS_SOFT_CLAUSE_CHARS=36` for earlier first audio.
 - **Startup warmups:** LLM and TTS workers perform warmup inference so the first real user turn avoids the coldest path.
 - **Direct fast paths:** Greetings, courtesy responses, and simple identity questions bypass full generation when safe.
 - **Barge-in fanout:** User interruption is broadcast through `control.signals` so active LLM/TTS work can stop quickly.
@@ -226,6 +230,7 @@ For local development, opening `frontend/index.html` directly still connects to 
 For a no-domain grading link on the JarvisLabs L4 VM, expose the Nginx frontend with Cloudflare Tunnel:
 
 ```bash
+tmux new -s live-demo
 cloudflared tunnel --url http://localhost:80
 ```
 
@@ -236,6 +241,12 @@ wss://<public-host>/api/v1/audio/stream
 ```
 
 This keeps microphone access browser-compatible and preserves the original WebSocket, RabbitMQ, ASR, RAG, LLM, TTS, Redis, and pgvector runtime.
+
+Keep the tunnel running during review. If using `tmux`, detach without stopping the tunnel by pressing `Ctrl+B`, then `D`, and reattach later with:
+
+```bash
+tmux attach -t live-demo
+```
 
 ### RAG Knowledge
 
