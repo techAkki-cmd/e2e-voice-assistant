@@ -61,6 +61,10 @@ ASR_TRANSCRIPT_REPLACEMENTS = os.getenv(
         "geo needs=GPU needs;geo instance=GPU instance"
     ),
 )
+ASR_REJECT_FINAL_PATTERNS = os.getenv(
+    "ASR_REJECT_FINAL_PATTERNS",
+    r"\bENDASPERATED\b;^\s*(?:THANKS FOR WATCHING|PLEASE SUBSCRIBE|SUBSCRIBE)\b",
+)
 
 
 @dataclass
@@ -101,6 +105,11 @@ def load_transcript_replacements() -> list[tuple[re.Pattern, str]]:
 
 
 TRANSCRIPT_REPLACEMENTS = load_transcript_replacements()
+REJECT_FINAL_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in ASR_REJECT_FINAL_PATTERNS.split(";")
+    if pattern.strip()
+]
 
 
 def apply_transcript_replacements(transcript: str) -> str:
@@ -108,6 +117,13 @@ def apply_transcript_replacements(transcript: str) -> str:
     for pattern, replacement in TRANSCRIPT_REPLACEMENTS:
         corrected = pattern.sub(replacement, corrected)
     return " ".join(corrected.split())
+
+
+def should_publish_final(transcript: str) -> bool:
+    normalized = " ".join(transcript.strip().split())
+    if len(normalized) < 3:
+        return False
+    return not any(pattern.search(normalized) for pattern in REJECT_FINAL_PATTERNS)
 
 
 def model_path(filename: str) -> str:
@@ -147,8 +163,8 @@ def pcm16_to_float32(body: bytes) -> np.ndarray:
     usable_length = len(body) - (len(body) % 2)
     if usable_length <= 0:
         return np.empty(0, dtype=np.float32)
-    samples = np.frombuffer(body[:usable_length], dtype="<i2")
-    return samples.astype(np.float32) / 32768.0
+    audio_int16 = np.frombuffer(body[:usable_length], dtype="<i2")
+    return audio_int16.astype(np.float32) / 32768.0
 
 
 def header_as_text(headers: dict | None, name: str) -> str | None:
@@ -342,8 +358,14 @@ async def main() -> None:
                             f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
                             flush=True,
                         )
-                        if final_transcript:
+                        if final_transcript and should_publish_final(final_transcript):
                             await publish_final(channel, final_transcript, correlation_id, session.latest_traceparent)
+                        elif final_transcript:
+                            print(
+                                f"[ASR] Dropped rejected final transcript: {final_transcript!r}; "
+                                f"correlation_id={correlation_id}; traceparent={session.latest_traceparent}",
+                                flush=True,
+                            )
                         reset_stream(sessions, recognizer, correlation_id, session.latest_traceparent)
 
                     cleanup_expired_sessions(sessions)

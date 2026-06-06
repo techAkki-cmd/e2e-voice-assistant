@@ -632,8 +632,12 @@ async def main() -> None:
                                 cleanup_interrupted_state(interrupted_at)
                                 await message.ack()
                                 continue
-                            if not retrieved_context and is_company_support_question(user_text):
-                                assistant_text = "I don't know based on the provided company context."
+                            if not retrieved_context:
+                                assistant_text = (
+                                    "I didn't catch that clearly. Please repeat your question."
+                                    if not is_company_support_question(user_text)
+                                    else "I don't know based on the provided company context."
+                                )
                                 await publish_text_chunk(
                                     channel,
                                     assistant_text,

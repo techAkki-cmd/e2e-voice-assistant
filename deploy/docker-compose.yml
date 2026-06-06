@@ -76,6 +76,7 @@ services:
       - ASR_SHERPA_RULE3_MIN_UTTERANCE_LENGTH=20
       - ASR_PARTIAL_THROTTLE_SECONDS=0.15
       - ASR_TRANSCRIPT_REPLACEMENTS=Erycheet=Arijit;Arycheet=Arijit;Arigit=Arijit;Ari Jeet=Arijit;L&M=LLM;L and M=LLM;L.N.=LLM;GUE=GUI;gooey=GUI;G U I=GUI;G P U=GPU;4GPU=What GPU;geo needs=GPU needs;geo instance=GPU instance
+      - ASR_REJECT_FINAL_PATTERNS=\bENDASPERATED\b;^\s*(?:THANKS FOR WATCHING|PLEASE SUBSCRIBE|SUBSCRIBE)\b
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:

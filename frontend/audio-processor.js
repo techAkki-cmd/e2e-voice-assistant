@@ -1,12 +1,9 @@
 class PCM16CaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.targetSampleRate = 16000;
     this.frameSampleCount = 320;
-    this.ratio = sampleRate / this.targetSampleRate;
-    this.pending = new Float32Array(0);
-    this.sourceOffset = 0;
-    this.frame = [];
+    this.frame = new Int16Array(this.frameSampleCount);
+    this.frameOffset = 0;
   }
 
   process(inputs, outputs) {
@@ -21,44 +18,27 @@ class PCM16CaptureProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    const combined = new Float32Array(this.pending.length + input.length);
-    combined.set(this.pending);
-    combined.set(input, this.pending.length);
+    for (let index = 0; index < input.length; index += 1) {
+      this.frame[this.frameOffset] = this.floatToInt16(input[index]);
+      this.frameOffset += 1;
 
-    let sourceIndex = this.sourceOffset;
-    while (sourceIndex < combined.length - 1) {
-      const lowerIndex = Math.floor(sourceIndex);
-      const upperIndex = lowerIndex + 1;
-      const fraction = sourceIndex - lowerIndex;
-      const sample = combined[lowerIndex] + (combined[upperIndex] - combined[lowerIndex]) * fraction;
-
-      this.frame.push(this.floatToInt16(sample));
-      if (this.frame.length === this.frameSampleCount) {
+      if (this.frameOffset === this.frameSampleCount) {
         this.emitFrame();
       }
-
-      sourceIndex += this.ratio;
     }
-
-    const consumed = Math.floor(sourceIndex);
-    this.sourceOffset = sourceIndex - consumed;
-    this.pending = combined.slice(consumed);
 
     return true;
   }
 
   floatToInt16(sample) {
     const clipped = Math.max(-1, Math.min(1, sample));
-    return clipped < 0 ? clipped * 0x8000 : clipped * 0x7fff;
+    return Math.round(clipped * 32767);
   }
 
   emitFrame() {
-    const pcm16 = new Int16Array(this.frameSampleCount);
-    for (let index = 0; index < this.frameSampleCount; index += 1) {
-      pcm16[index] = this.frame[index];
-    }
+    const pcm16 = new Int16Array(this.frame);
     this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
-    this.frame = [];
+    this.frameOffset = 0;
   }
 }
 

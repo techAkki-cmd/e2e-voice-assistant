@@ -443,7 +443,10 @@
       }
 
       if (!app.audioContext || app.audioContext.state === "closed") {
-        app.audioContext = new AudioContextClass();
+        app.audioContext = new AudioContextClass({ sampleRate: INPUT_SAMPLE_RATE });
+        if (app.audioContext.sampleRate !== INPUT_SAMPLE_RATE) {
+          log(`AudioContext using ${app.audioContext.sampleRate} Hz instead of requested ${INPUT_SAMPLE_RATE} Hz`, "warn");
+        }
       }
 
       if (app.audioContext.state === "suspended") {
