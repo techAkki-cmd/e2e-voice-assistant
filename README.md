@@ -1,8 +1,8 @@
 # JarvisLabs Real-Time Voice Assistant
 
 * **Live Demo URL:** [https://costs-assure-experience-map.trycloudflare.com/](https://costs-assure-experience-map.trycloudflare.com/)
-* **Demo Video Link:** *[Add your demo video link here]*
-* **Sample Audio Clip:** *[Add your sample audio clip link here]*
+* **Demo Video Link:** [https://www.loom.com/share/7d7293e1021b41b795b13d50276cad01](https://www.loom.com/share/7d7293e1021b41b795b13d50276cad01)
+* **Sample Audio Clip:** [https://drive.google.com/file/d/1mt9dTG3hTuKmDB3AxOP7UhD6wihAm5lc/view?usp=drive_link](https://drive.google.com/file/d/1mt9dTG3hTuKmDB3AxOP7UhD6wihAm5lc/view?usp=drive_link)
 
 > **Operational Note for Reviewers:** The live demo URL is activated exclusively during the evaluation window since real-time GPU inference runs on a paid JarvisLabs L4 instance. For no-domain review access, start the full microservices stack on the L4 VM and route traffic using `cloudflared tunnel --url http://localhost:80`. The generated HTTPS URL provides temporary secure reviewer access while the VM runtime and tunnel are active.
 
@@ -18,7 +18,7 @@ I built this to move beyond the easy version of AI assistants: turn-based text c
 
 ## Demo Transcript & Fallback
 
-**Fallback sample audio:** [Add sample audio clip link here]
+**Fallback sample audio:** [https://drive.google.com/file/d/1mt9dTG3hTuKmDB3AxOP7UhD6wihAm5lc/view?usp=drive_link](https://drive.google.com/file/d/1mt9dTG3hTuKmDB3AxOP7UhD6wihAm5lc/view?usp=drive_link)
 
 Expected behavior from a short demo session:
 
@@ -250,7 +250,11 @@ tmux attach -t live-demo
 
 ### RAG Knowledge
 
-The current version uses admin-managed RAG knowledge. Add company documents or seed chunks, ingest them into pgvector, and then start or restart the RAG worker. End-user self-serve document upload is not part of this version.
+No manual ingestion is required for the demo. On startup, `rag-service` automatically creates the pgvector schema and seeds the database from `inference-services/rag_service/seed_chunks.json` if no embedded rows exist.
+
+The included seed knowledge covers the JarvisLabs demo support context, including NVIDIA L4 guidance for small LLM projects, dashboard access, notebook and SSH workflows, deployment support, billing and cost-control caveats, and live pricing/availability caveats.
+
+For custom company documents, an operator can later use `inference-services/rag_service/ingest_documents.py` to ingest files into pgvector. End-user self-serve document upload is not part of this version.
 
 ## What I Used AI For
 

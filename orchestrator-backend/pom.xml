@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.5</version> <!-- Clean, stable 2024-2026 baseline -->
+        <version>3.2.5</version>
         <relativePath/>
     </parent>
 
@@ -19,12 +19,10 @@
     </properties>
 
     <dependencies>
-        <!-- Reactive Web Stack for WebSockets -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
-        <!-- Reactive RabbitMQ Routing -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>
