@@ -1,22 +1,58 @@
 [
   {
     "source": "jarvislabs-platform-overview",
-    "content": "JarvisLabs provides cloud GPU compute for AI and machine learning workloads, including notebook-driven experiments, model training, inference, and deployment workflows."
+    "content": "JarvisLabs provides cloud GPU compute for AI and machine learning workloads. It is useful for notebook-driven experimentation, model training, inference testing, deployment workflows, and running GPU-backed development environments without managing physical infrastructure."
   },
   {
     "source": "jarvislabs-dashboard-and-access",
-    "content": "The JarvisLabs dashboard is the graphical user interface for creating and managing GPU instances. Users can also work through Jupyter Notebook, terminal access, SSH, and deployment controls depending on the instance setup."
+    "content": "The JarvisLabs dashboard is the main graphical interface for creating, monitoring, and managing GPU instances. From the dashboard, users can review instance state, start or stop machines, access notebooks, manage deployment controls, and check live GPU availability depending on their account and region."
+  },
+  {
+    "source": "jarvislabs-notebook-terminal-ssh",
+    "content": "JarvisLabs instances can support Jupyter Notebook access for interactive development, terminal access for command-line work, and SSH access for developers who prefer connecting from their local machine. These access modes help users install packages, run training scripts, debug inference services, and manage project files."
   },
   {
     "source": "gpu-guidance-small-llm",
-    "content": "For a small LLM project, start with an NVIDIA L4 when the workload is lightweight or cost-sensitive. Use A100 or H100 for larger models, higher throughput, heavier training, or demanding inference workloads."
+    "content": "For a small LLM project, start with an NVIDIA L4 when the workload is lightweight, cost-sensitive, or focused on inference and smaller experiments. L4 is a practical starting point for demos, prototypes, smaller fine-tuning experiments, and serving compact models."
+  },
+  {
+    "source": "gpu-guidance-larger-models",
+    "content": "Use A100 or H100 class GPUs for larger models, higher throughput inference, heavier training, larger fine-tuning jobs, or workloads that need substantially more VRAM and compute. A100 and H100 are better choices when model size, batch size, or latency targets exceed what a smaller GPU can comfortably handle."
+  },
+  {
+    "source": "deployment-workflow",
+    "content": "A typical JarvisLabs AI workflow starts by creating a GPU instance, opening a notebook or terminal, installing dependencies, cloning a project, validating the model locally, and then exposing an inference service or application through the available deployment controls. Users commonly move from notebook experimentation to a running API, demo, or web app on the same GPU-backed environment."
+  },
+  {
+    "source": "model-inference-support",
+    "content": "JarvisLabs can be used to run inference workloads such as ASR models, LLMs, TTS models, embedding models, and custom PyTorch or CUDA applications. Users should choose the GPU size based on model memory requirements, expected concurrency, response latency, and whether the workload is interactive or batch-oriented."
+  },
+  {
+    "source": "storage-and-persistence",
+    "content": "Persistent storage is important for model caches, datasets, checkpoints, logs, and application files. Users should avoid assuming that temporary runtime directories are durable, and should keep important project assets in the storage locations recommended by the platform or their instance setup."
+  },
+  {
+    "source": "containers-and-environments",
+    "content": "JarvisLabs workloads often depend on CUDA, PyTorch, Python packages, model files, and system libraries. Containerized deployments can make an environment more reproducible by packaging service dependencies, startup commands, and runtime configuration together."
+  },
+  {
+    "source": "billing-and-cost-control",
+    "content": "GPU instances can incur cost while they are running. Users should stop or shut down instances when they are not actively needed, especially for demos, experiments, or review windows. For production usage, monitor runtime, GPU choice, storage, and any platform-specific billing settings from the dashboard."
   },
   {
     "source": "live-inventory-caveat",
-    "content": "GPU availability, exact pricing, and live inventory can change. For current GPU stock, pricing, and regional availability, users should check the live JarvisLabs dashboard rather than relying on a static assistant answer."
+    "content": "GPU availability, exact pricing, live inventory, regional availability, and promotions can change. For current GPU stock, exact hourly pricing, account-specific billing details, and available regions, users should check the live JarvisLabs dashboard rather than relying on a static assistant answer."
   },
   {
     "source": "deployment-support-scope",
-    "content": "JarvisLabs support topics include GPU instances, CUDA and PyTorch setup, model deployment, billing and account help, SSH access, persistent storage, containers, and troubleshooting inference workloads."
+    "content": "JarvisLabs support topics include GPU instance selection, CUDA and PyTorch setup, model deployment, billing and account help, SSH access, persistent storage, containers, notebook access, terminal access, and troubleshooting inference workloads."
+  },
+  {
+    "source": "troubleshooting-startup",
+    "content": "If a deployed AI service is slow to start, common causes include model downloads, cold GPU initialization, dependency installation, container image pulls, or warmup inference. Caching model files, prebuilding containers, and running startup warmups can reduce first-request latency."
+  },
+  {
+    "source": "voice-assistant-demo-context",
+    "content": "For this demo, Jarvis acts as a JarvisLabs support voice assistant. It should answer general platform questions, recommend NVIDIA L4 as a starting GPU for small LLM projects, explain when larger GPUs are appropriate, and avoid inventing exact live pricing or inventory details."
   }
 ]
