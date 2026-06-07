@@ -141,8 +141,15 @@ These values were measured from the live browser frontend after deploying throug
 | RAG-grounded JarvisLabs question, speech end to first spoken response | 3.86 s |
 | RAG-grounded JarvisLabs question, speech end to latest streamed audio | 5.45 s |
 | Long answer, speech end to first spoken response | 3.23 s |
-| Long answer, full streamed response completion | 11.6 s |
+| Long answer, full streamed response completion | 13.67 s |
 
+### Live Metrics Evidence
+
+The screenshots below were captured from the deployed frontend observability dashboard while the app was running through the Cloudflare Tunnel on the JarvisLabs L4 VM.
+
+![RAG-grounded JarvisLabs latency metrics](docs/assets/rag-latency-metrics.png)
+
+![Long answer streamed response latency metrics](docs/assets/long-answer-latency-metrics.png)
 
 ## What I Did To Reduce Latency
 
